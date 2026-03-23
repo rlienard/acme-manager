@@ -37,7 +37,7 @@ All managed through a **web dashboard** — no CLI required.
 
 ```bash
 # Clone
-git clone https://github.com/yourusername/ise-acme-manager.git
+git clone https://github.com/rlienard/ise-acme-manager.git
 cd ise-acme-manager
 
 # Build and start
