@@ -1,1 +1,209 @@
+"""
+Database models and setup using SQLAlchemy + SQLite.
+Stores configuration, renewal history, and daemon state.
+"""
 
+import os
+from datetime import datetime
+from sqlalchemy import (
+    create_engine, Column, Integer, String, Text, Boolean,
+    DateTime, Float, JSON, Enum as SQLEnum
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import enum
+
+DATABASE_DIR = os.getenv("DATA_DIR", "/app/data")
+DATABASE_URL = f"sqlite:///{DATABASE_DIR}/ise_acme.db"
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+# ──────────────────────────────────────
+# Enums
+# ──────────────────────────────────────
+
+class RenewalStatus(str, enum.Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class DaemonState(str, enum.Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    ERROR = "error"
+    DISABLED = "disabled"
+
+
+# ──────────────────────────────────────
+# Models
+# ──────────────────────────────────────
+
+class Settings(Base):
+    """Stores all configuration settings as key-value pairs."""
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(255), unique=True, nullable=False, index=True)
+    value = Column(Text, nullable=True)
+    value_type = Column(String(50), default="string")  # string, integer, boolean, json
+    category = Column(String(100), nullable=False)  # ise, acme, certificate, dns, smtp, scheduler
+    description = Column(Text, nullable=True)
+    is_secret = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ISENode(Base):
+    """ISE PSN node registry."""
+    __tablename__ = "ise_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    role = Column(String(50), default="PSN")
+    enabled = Column(Boolean, default=True)
+    is_primary = Column(Boolean, default=False)
+    last_cert_check = Column(DateTime, nullable=True)
+    cert_expiry_date = Column(DateTime, nullable=True)
+    cert_days_remaining = Column(Integer, nullable=True)
+    cert_status = Column(String(50), default="unknown")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RenewalHistory(Base):
+    """Certificate renewal audit log."""
+    __tablename__ = "renewal_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(36), nullable=False, index=True)  # UUID for each run
+    status = Column(SQLEnum(RenewalStatus), default=RenewalStatus.PENDING)
+    mode = Column(String(20), default="shared")  # shared or per-node
+    trigger = Column(String(50), default="scheduled")  # scheduled, manual, force
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    common_name = Column(String(255), nullable=True)
+    node_results = Column(JSON, nullable=True)  # Per-node results
+    error_message = Column(Text, nullable=True)
+    dns_challenge_created = Column(Boolean, default=False)
+    dns_challenge_cleaned = Column(Boolean, default=False)
+    notification_sent = Column(Boolean, default=False)
+    log_output = Column(Text, nullable=True)
+
+
+class DaemonStatus(Base):
+    """Daemon runtime state tracking."""
+    __tablename__ = "daemon_status"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    state = Column(SQLEnum(DaemonState), default=DaemonState.IDLE)
+    current_action = Column(String(255), nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_run_status = Column(String(50), nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    uptime_since = Column(DateTime, default=datetime.utcnow)
+    total_renewals = Column(Integer, default=0)
+    successful_renewals = Column(Integer, default=0)
+    failed_renewals = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+    version = Column(String(20), default="2.0.0")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ──────────────────────────────────────
+# Database initialization
+# ──────────────────────────────────────
+
+def init_db():
+    """Create all tables and seed initial data."""
+    os.makedirs(DATABASE_DIR, exist_ok=True)
+    Base.metadata.create_all(bind=engine)
+
+    db = SessionLocal()
+    try:
+        # Initialize daemon status if not exists
+        status = db.query(DaemonStatus).first()
+        if not status:
+            status = DaemonStatus(
+                state=DaemonState.IDLE,
+                uptime_since=datetime.utcnow()
+            )
+            db.add(status)
+
+        # Seed default settings if empty
+        if db.query(Settings).count() == 0:
+            _seed_default_settings(db)
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def _seed_default_settings(db):
+    """Populate default settings."""
+    defaults = [
+        # ISE Settings
+        ("ise_host", "", "string", "ise", "ISE PAN hostname or IP", False),
+        ("ise_username", "", "string", "ise", "ISE admin username", False),
+        ("ise_password", "", "string", "ise", "ISE admin password", True),
+        ("ise_ers_port", "9060", "integer", "ise", "ISE ERS API port", False),
+        ("ise_open_api_port", "443", "integer", "ise", "ISE Open API port", False),
+
+        # ACME Settings
+        ("acme_directory_url", "https://acme.digicert.com/v2/acme/directory/", "string", "acme", "ACME directory URL", False),
+        ("acme_kid", "", "string", "acme", "ACME Key ID (KID)", True),
+        ("acme_hmac_key", "", "string", "acme", "ACME HMAC Key", True),
+
+        # Certificate Settings
+        ("common_name", "", "string", "certificate", "Certificate Common Name", False),
+        ("san_names", "[]", "json", "certificate", "Subject Alternative Names", False),
+        ("key_type", "RSA_2048", "string", "certificate", "Key type", False),
+        ("portal_group_tag", "Default Portal Certificate Group", "string", "certificate", "ISE Portal Group Tag", False),
+        ("certificate_mode", "shared", "string", "certificate", "Certificate mode: shared or per-node", False),
+        ("renewal_threshold_days", "30", "integer", "certificate", "Days before expiry to trigger renewal", False),
+
+        # DNS Settings
+        ("dns_provider", "cloudflare", "string", "dns", "DNS provider", False),
+        ("cloudflare_api_token", "", "string", "dns", "Cloudflare API token", True),
+        ("cloudflare_zone_id", "", "string", "dns", "Cloudflare Zone ID", False),
+        ("aws_hosted_zone_id", "", "string", "dns", "AWS Route53 Hosted Zone ID", False),
+        ("aws_region", "us-east-1", "string", "dns", "AWS Region", False),
+        ("azure_subscription_id", "", "string", "dns", "Azure Subscription ID", False),
+        ("azure_resource_group", "", "string", "dns", "Azure Resource Group", False),
+        ("azure_dns_zone_name", "", "string", "dns", "Azure DNS Zone Name", False),
+
+        # SMTP Settings
+        ("smtp_server", "", "string", "smtp", "SMTP server hostname", False),
+        ("smtp_port", "587", "integer", "smtp", "SMTP port", False),
+        ("smtp_username", "", "string", "smtp", "SMTP username", False),
+        ("smtp_password", "", "string", "smtp", "SMTP password", True),
+        ("alert_recipients", "[]", "json", "smtp", "Alert email recipients", False),
+
+        # Scheduler Settings
+        ("scheduler_enabled", "true", "boolean", "scheduler", "Enable automatic scheduling", False),
+        ("scheduler_cron_hour", "2", "integer", "scheduler", "Hour to run (0-23)", False),
+        ("scheduler_cron_minute", "0", "integer", "scheduler", "Minute to run (0-59)", False),
+        ("scheduler_interval_hours", "24", "integer", "scheduler", "Interval between runs in hours", False),
+    ]
+
+    for key, value, vtype, category, desc, is_secret in defaults:
+        setting = Settings(
+            key=key, value=value, value_type=vtype,
+            category=category, description=desc, is_secret=is_secret
+        )
+        db.add(setting)
+
+
+def get_db():
+    """Dependency for FastAPI — yields a database session."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
