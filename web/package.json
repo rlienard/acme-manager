@@ -1,1 +1,10 @@
-
+{
+    "name": "ise-acme-web",
+    "version": "2.0.0",
+    "description": "ISE ACME Certificate Manager — Web Interface",
+    "private": true,
+    "scripts": {
+        "dev": "python3 -m http.server 8080 --directory src",
+        "build": "echo 'Static files — no build step needed'"
+    }
+}
