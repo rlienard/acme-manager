@@ -1,1 +1,64 @@
+# ──────────────────────────────────────
+# ISE ACME Certificate Manager
+# Two-container deployment
+# ──────────────────────────────────────
 
+version: "3.8"
+
+services:
+  # ─────────────────────────────
+  # API Daemon (Backend)
+  # ─────────────────────────────
+  daemon:
+    build:
+      context: ./daemon
+      dockerfile: Dockerfile
+    image: ise-acme-daemon:latest
+    container_name: ise-acme-daemon
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - daemon-data:/app/data
+    environment:
+      - TZ=Europe/Amsterdam
+      - DATA_DIR=/app/data
+    networks:
+      - ise-acme-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8443/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────
+  # Web Interface (Frontend)
+  # ─────────────────────────────
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: ise-acme-web:latest
+    container_name: ise-acme-web
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      daemon:
+        condition: service_healthy
+    networks:
+      - ise-acme-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  daemon-data:
+    driver: local
+
+networks:
+  ise-acme-net:
+    driver: bridge
