@@ -24,6 +24,10 @@ All managed through a **web dashboard** — no CLI required.
 
 ![Alt Dashboard](Dashboard.png)
 
+![Alt Dashboard](Settings.png)
+
+![Alt Dashboard](History.png)
+
 ---
 
 ## Quick Start
