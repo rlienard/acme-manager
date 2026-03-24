@@ -22,6 +22,8 @@ Managing SSL/TLS certificates for Cisco ISE guest portals is a manual, error-pro
 
 All managed through a **web dashboard** — no CLI required.
 
+(/ise-acme-manager/blob/main/Dashboard.png)
+
 ---
 
 ## Quick Start
