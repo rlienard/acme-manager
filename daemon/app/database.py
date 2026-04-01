@@ -154,6 +154,7 @@ def _seed_default_settings(db):
         ("ise_password", "", "string", "ise", "ISE admin password", True),
         ("ise_ers_port", "9060", "integer", "ise", "ISE ERS API port", False),
         ("ise_open_api_port", "443", "integer", "ise", "ISE Open API port", False),
+        ("ise_dns_server", "", "string", "ise", "Custom DNS server IP for resolving ISE FQDN (leave empty to use system default)", False),
 
         # ACME Settings
         ("acme_directory_url", "https://acme.digicert.com/v2/acme/directory/", "string", "acme", "ACME directory URL", False),
