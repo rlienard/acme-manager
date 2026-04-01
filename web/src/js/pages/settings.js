@@ -40,6 +40,10 @@ const Settings = {
                         <label>Open API Port</label>
                         <input id="ise_open_api_port" type="number" value="${s.ise?.ise_open_api_port || 443}">
                     </div>
+                    <div class="form-group">
+                        <label>Custom DNS Server <small style="color:var(--text-muted)">(optional — for resolving ISE FQDN)</small></label>
+                        <input id="ise_dns_server" value="${s.ise?.ise_dns_server || ''}" placeholder="e.g. 192.168.1.53 (leave empty for system default)">
+                    </div>
                 </div>
                 <div class="btn-group">
                     <button class="btn btn-primary btn-sm" onclick="Settings.saveISE()">
@@ -344,6 +348,7 @@ const Settings = {
                 ise_password: document.getElementById('ise_password').value,
                 ise_ers_port: parseInt(document.getElementById('ise_ers_port').value),
                 ise_open_api_port: parseInt(document.getElementById('ise_open_api_port').value),
+                ise_dns_server: document.getElementById('ise_dns_server').value || null,
             };
             if (!data.ise_password) delete data.ise_password;
             await api.updateISE(data);
