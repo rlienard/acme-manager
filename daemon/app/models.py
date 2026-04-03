@@ -128,6 +128,35 @@ class ISENodeResponse(BaseModel):
 
 
 # ──────────────────────────────────────
+# Discovery Models
+# ──────────────────────────────────────
+
+class DiscoveredNode(BaseModel):
+    ers_id: str
+    name: str
+    fqdn: str
+    roles: List[str]
+    is_primary_pan: bool
+
+
+class DiscoverNodesResponse(BaseModel):
+    nodes: List[DiscoveredNode]
+    total: int
+    psn_count: int
+
+
+class SystemCertificateInfo(BaseModel):
+    id: str
+    friendly_name: str
+    subject: str
+    issuer: Optional[str] = None
+    expiration_date: Optional[str] = None
+    used_by: Optional[str] = None
+    key_type: Optional[str] = None
+    node_name: Optional[str] = None
+
+
+# ──────────────────────────────────────
 # Status Models
 # ──────────────────────────────────────
 

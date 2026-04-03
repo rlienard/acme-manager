@@ -37,6 +37,7 @@ class ISEClient:
         self.username = config.get("ise_username", "")
         self.password = config.get("ise_password", "")
         self.open_api_port = config.get("ise_open_api_port", 443)
+        self.ers_port = config.get("ise_ers_port", 9060)
         self.dns_server = config.get("ise_dns_server", "") or ""
 
         # If a custom DNS server is configured, resolve the ISE FQDN using it.
@@ -45,8 +46,10 @@ class ISEClient:
         if self.dns_server and self.host:
             resolved = _resolve_with_custom_dns(self.host, self.dns_server)
             self.base_url = f"https://{resolved}:{self.open_api_port}/api/v1"
+            self.ers_base_url = f"https://{resolved}:{self.ers_port}/ers/config"
         else:
             self.base_url = f"https://{self.host}:{self.open_api_port}/api/v1"
+            self.ers_base_url = f"https://{self.host}:{self.ers_port}/ers/config"
 
         self.session = requests.Session()
         self.session.auth = (self.username, self.password)
@@ -56,8 +59,17 @@ class ISEClient:
             "Accept": "application/json"
         })
 
+        self.ers_session = requests.Session()
+        self.ers_session.auth = (self.username, self.password)
+        self.ers_session.verify = False
+        self.ers_session.headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        })
+
         if self.dns_server and self.host:
             self.session.headers.update({"Host": self.host})
+            self.ers_session.headers.update({"Host": self.host})
 
     def test_connection(self) -> dict:
         """Test connectivity to ISE."""
@@ -186,3 +198,81 @@ class ISEClient:
         response = self.session.put(url, json=payload, timeout=30)
         response.raise_for_status()
         return response.json()
+
+    # ──────────────────────────────
+    # ERS API — Node Discovery
+    # ──────────────────────────────
+
+    def test_ers_connection(self) -> dict:
+        """Test connectivity to ISE ERS API."""
+        try:
+            url = f"{self.ers_base_url}/node"
+            response = self.ers_session.get(url, timeout=10)
+            response.raise_for_status()
+            return {"success": True, "message": "ERS connection successful"}
+        except requests.exceptions.ConnectionError:
+            return {"success": False, "message": f"Cannot connect to ERS on {self.host}:{self.ers_port}"}
+        except requests.exceptions.HTTPError as e:
+            return {"success": False, "message": f"HTTP error: {e.response.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def get_node_detail(self, node_id: str) -> dict:
+        """Get full node details from ERS API."""
+        url = f"{self.ers_base_url}/node/{node_id}"
+        response = self.ers_session.get(url, timeout=30)
+        response.raise_for_status()
+        return response.json().get("Node", {})
+
+    def _derive_roles(self, node_detail: dict) -> list:
+        """Derive node roles from ERS node detail response."""
+        roles = []
+        if node_detail.get("papNode", False):
+            roles.append("PAN")
+        services = node_detail.get("services", {})
+        if isinstance(services, dict):
+            service_keys = [k.lower() for k in services.keys()]
+            psn_indicators = ["session", "profiler", "deviceadmin", "sxp"]
+            if any(ind in sk for sk in service_keys for ind in psn_indicators):
+                roles.append("PSN")
+            mon_indicators = ["monitoring"]
+            if any(ind in sk for sk in service_keys for ind in mon_indicators):
+                roles.append("MnT")
+        if node_detail.get("pxGridNode", False):
+            roles.append("pxGrid")
+        if not roles:
+            roles.append("PSN")
+        return roles
+
+    def discover_nodes(self) -> list:
+        """Discover all nodes in the ISE deployment via ERS API."""
+        url = f"{self.ers_base_url}/node"
+        response = self.ers_session.get(url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        resources = data.get("SearchResult", {}).get("resources", [])
+        nodes = []
+        for resource in resources:
+            node_id = resource.get("id", "")
+            try:
+                detail = self.get_node_detail(node_id)
+                roles = self._derive_roles(detail)
+                nodes.append({
+                    "ers_id": node_id,
+                    "name": detail.get("name", resource.get("name", "")),
+                    "fqdn": detail.get("fqdn", detail.get("name", resource.get("name", ""))),
+                    "roles": roles,
+                    "is_primary_pan": detail.get("primaryPapNode", False),
+                })
+            except Exception as e:
+                logger.warning(f"Failed to get details for node {resource.get('name')}: {e}")
+                nodes.append({
+                    "ers_id": node_id,
+                    "name": resource.get("name", ""),
+                    "fqdn": resource.get("name", ""),
+                    "roles": ["unknown"],
+                    "is_primary_pan": False,
+                })
+
+        return nodes
