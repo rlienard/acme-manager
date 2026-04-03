@@ -42,8 +42,16 @@ const api = {
     updateNode(id, data) { return this.request('PUT', `/api/v1/settings/nodes/${id}`, data); },
     deleteNode(id) { return this.request('DELETE', `/api/v1/settings/nodes/${id}`); },
 
+    // Discovery
+    discoverNodes() { return this.request('POST', '/api/v1/settings/nodes/discover'); },
+    syncNodes(nodes) { return this.request('POST', '/api/v1/settings/nodes/sync', nodes); },
+
+    // Certificates
+    getCertificates() { return this.request('GET', '/api/v1/settings/certificates'); },
+
     // Tests
     testISE() { return this.request('POST', '/api/v1/settings/test/ise'); },
+    testERS() { return this.request('POST', '/api/v1/settings/test/ers'); },
     testDNS() { return this.request('POST', '/api/v1/settings/test/dns'); },
 
     // Actions

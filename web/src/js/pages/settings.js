@@ -50,7 +50,10 @@ const Settings = {
                         <i class="fas fa-save"></i> Save ISE Settings
                     </button>
                     <button class="btn btn-outline btn-sm" onclick="Settings.testISE()">
-                        <i class="fas fa-plug"></i> Test Connection
+                        <i class="fas fa-plug"></i> Test Open API
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="Settings.testERS()">
+                        <i class="fas fa-plug"></i> Test ERS
                     </button>
                 </div>
             </div>
@@ -83,9 +86,17 @@ const Settings = {
             <div class="settings-section">
                 <h2><i class="fas fa-lock"></i> Certificate</h2>
                 <div class="form-grid">
-                    <div class="form-group">
-                        <label>Common Name</label>
-                        <input id="common_name" value="${s.certificate?.common_name || ''}" placeholder="guest.yourdomain.com">
+                    <div class="form-group" style="grid-column: span 2">
+                        <label>
+                            Common Name
+                            <button class="btn btn-outline btn-sm" onclick="Settings.loadCertificateOptions()" style="float:right; padding:2px 8px; font-size:0.75rem">
+                                <i class="fas fa-sync-alt"></i> Load from ISE
+                            </button>
+                        </label>
+                        <select id="common_name">
+                            <option value="">-- Select a certificate or type manually below --</option>
+                        </select>
+                        <input id="common_name_manual" value="${s.certificate?.common_name || ''}" placeholder="Or type manually: guest.yourdomain.com" style="margin-top:0.5rem">
                     </div>
                     <div class="form-group">
                         <label>SAN Names (comma-separated)</label>
@@ -242,33 +253,57 @@ const Settings = {
             <!-- ISE Nodes Management -->
             <div class="settings-section">
                 <h2><i class="fas fa-network-wired"></i> ISE Nodes</h2>
-                <div id="nodes-list"></div>
-                <div class="form-grid" style="margin-top:1rem; border-top:1px solid var(--border); padding-top:1rem">
-                    <div class="form-group">
-                        <label>Node Hostname (FQDN)</label>
-                        <input id="new_node_name" placeholder="ise-psn01.yourdomain.com">
-                    </div>
-                    <div class="form-group">
-                        <label>Role</label>
-                        <select id="new_node_role">
-                            <option value="PSN">PSN</option>
-                            <option value="PAN">PAN</option>
-                            <option value="MnT">MnT</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Primary Node?</label>
-                        <select id="new_node_primary">
-                            <option value="false">No</option>
-                            <option value="true">Yes</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="btn-group">
-                    <button class="btn btn-success btn-sm" onclick="Settings.addNode()">
-                        <i class="fas fa-plus"></i> Add Node
+
+                <div class="btn-group" style="margin-bottom:1rem">
+                    <button class="btn btn-primary btn-sm" onclick="Settings.discoverNodes()">
+                        <i class="fas fa-search"></i> Discover Nodes via ERS
                     </button>
                 </div>
+
+                <div id="discovery-results" style="display:none; margin-bottom:1rem; border:1px solid var(--border); border-radius:8px; padding:1rem; background:var(--bg-secondary)">
+                    <h3 style="margin-top:0"><i class="fas fa-satellite-dish"></i> Discovered Nodes</h3>
+                    <table id="discovery-table"></table>
+                    <div class="btn-group" style="margin-top:0.75rem">
+                        <button class="btn btn-success btn-sm" onclick="Settings.syncDiscoveredNodes()">
+                            <i class="fas fa-sync"></i> Sync Selected Nodes
+                        </button>
+                        <button class="btn btn-outline btn-sm" onclick="document.getElementById('discovery-results').style.display='none'">
+                            <i class="fas fa-times"></i> Dismiss
+                        </button>
+                    </div>
+                </div>
+
+                <div id="nodes-list"></div>
+
+                <details style="margin-top:1rem; border-top:1px solid var(--border); padding-top:1rem">
+                    <summary style="cursor:pointer; color:var(--text-muted); font-size:0.9rem"><i class="fas fa-plus-circle"></i> Manual Node Entry</summary>
+                    <div class="form-grid" style="margin-top:0.75rem">
+                        <div class="form-group">
+                            <label>Node Hostname (FQDN)</label>
+                            <input id="new_node_name" placeholder="ise-psn01.yourdomain.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Role</label>
+                            <select id="new_node_role">
+                                <option value="PSN">PSN</option>
+                                <option value="PAN">PAN</option>
+                                <option value="MnT">MnT</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Primary Node?</label>
+                            <select id="new_node_primary">
+                                <option value="false">No</option>
+                                <option value="true">Yes</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-success btn-sm" onclick="Settings.addNode()">
+                            <i class="fas fa-plus"></i> Add Node
+                        </button>
+                    </div>
+                </details>
             </div>`;
         } catch (err) {
             return `<div class="settings-section" style="border-color:var(--danger)">
@@ -281,6 +316,9 @@ const Settings = {
     afterRender() {
         this.toggleDNSFields();
         this.loadNodes();
+        if (this.currentSettings?.ise?.ise_host) {
+            this.loadCertificateOptions();
+        }
     },
 
     toggleDNSFields() {
@@ -373,8 +411,15 @@ const Settings = {
     async saveCertificate() {
         try {
             const sanInput = document.getElementById('san_names').value;
+            const cnFromDropdown = document.getElementById('common_name').value;
+            const cnFromManual = document.getElementById('common_name_manual').value;
+            const common_name = cnFromDropdown || cnFromManual;
+            if (!common_name) {
+                Toast.warning('Please select or enter a Common Name');
+                return;
+            }
             const data = {
-                common_name: document.getElementById('common_name').value,
+                common_name,
                 san_names: sanInput ? sanInput.split(',').map(s => s.trim()).filter(Boolean) : [],
                 key_type: document.getElementById('key_type').value,
                 certificate_mode: document.getElementById('certificate_mode').value,
@@ -496,5 +541,131 @@ const Settings = {
             Toast.success(`Node ${name} deleted`);
             this.loadNodes();
         } catch (err) { Toast.error('Failed to delete node: ' + err.message); }
+    },
+
+    // ── ERS Discovery ──
+
+    async testERS() {
+        try {
+            Toast.info('Testing ERS connection...');
+            const result = await api.testERS();
+            if (result.success) {
+                Toast.success('ERS connection successful!');
+            } else {
+                Toast.error('ERS connection failed: ' + result.message);
+            }
+        } catch (err) { Toast.error('Test failed: ' + err.message); }
+    },
+
+    _discoveredNodes: [],
+
+    async discoverNodes() {
+        try {
+            Toast.info('Discovering ISE deployment nodes...');
+            const result = await api.discoverNodes();
+            this._discoveredNodes = result.nodes;
+
+            const container = document.getElementById('discovery-results');
+            const table = document.getElementById('discovery-table');
+            if (!container || !table) return;
+
+            table.innerHTML = `
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" id="discovery-select-all" onchange="Settings.toggleDiscoverySelectAll(this.checked)" checked></th>
+                        <th>Name</th>
+                        <th>FQDN</th>
+                        <th>Roles</th>
+                        <th>Primary PAN</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${result.nodes.map((node, idx) => {
+                        const hasPSN = node.roles.includes('PSN');
+                        return `
+                        <tr>
+                            <td><input type="checkbox" class="discovery-check" data-idx="${idx}" ${hasPSN ? 'checked' : ''}></td>
+                            <td><strong>${node.name}</strong></td>
+                            <td>${node.fqdn}</td>
+                            <td>${node.roles.map(r => `<span class="badge ${r === 'PSN' ? 'success' : r === 'PAN' ? 'info' : 'neutral'}">${r}</span>`).join(' ')}</td>
+                            <td>${node.is_primary_pan ? '<span class="badge success">YES</span>' : ''}</td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>`;
+
+            container.style.display = 'block';
+            Toast.success(`Discovered ${result.total} nodes (${result.psn_count} PSN)`);
+        } catch (err) { Toast.error('Discovery failed: ' + err.message); }
+    },
+
+    toggleDiscoverySelectAll(checked) {
+        document.querySelectorAll('.discovery-check').forEach(cb => cb.checked = checked);
+    },
+
+    async syncDiscoveredNodes() {
+        try {
+            const checks = document.querySelectorAll('.discovery-check:checked');
+            if (checks.length === 0) {
+                Toast.warning('No nodes selected');
+                return;
+            }
+
+            const nodes = [];
+            checks.forEach(cb => {
+                const idx = parseInt(cb.dataset.idx);
+                const node = this._discoveredNodes[idx];
+                if (node) {
+                    nodes.push({
+                        name: node.fqdn,
+                        role: node.roles.join(','),
+                        enabled: true,
+                        is_primary: node.is_primary_pan,
+                    });
+                }
+            });
+
+            const result = await api.syncNodes(nodes);
+            Toast.success(result.message);
+            document.getElementById('discovery-results').style.display = 'none';
+            this.loadNodes();
+        } catch (err) { Toast.error('Sync failed: ' + err.message); }
+    },
+
+    // ── Certificate Loading ──
+
+    _extractCN(subject) {
+        if (!subject) return '';
+        const match = subject.match(/CN=([^,]+)/i);
+        return match ? match[1].trim() : subject;
+    },
+
+    async loadCertificateOptions() {
+        try {
+            const certs = await api.getCertificates();
+            const select = document.getElementById('common_name');
+            if (!select) return;
+
+            select.innerHTML = '<option value="">-- Select a certificate --</option>';
+            certs.forEach(cert => {
+                const cn = this._extractCN(cert.subject);
+                const expiry = cert.expiration_date ? ` (expires: ${cert.expiration_date.split('T')[0]})` : '';
+                const usedBy = cert.used_by ? ` [${cert.used_by}]` : '';
+                const opt = document.createElement('option');
+                opt.value = cn;
+                opt.textContent = `${cert.friendly_name}${usedBy}${expiry}`;
+                select.appendChild(opt);
+            });
+
+            const current = document.getElementById('common_name_manual')?.value;
+            if (current) {
+                select.value = current;
+            }
+        } catch (err) {
+            // Silently fail on auto-load — ISE may not be reachable yet
+            const select = document.getElementById('common_name');
+            if (select) {
+                select.innerHTML = '<option value="">-- Could not load certificates --</option>';
+            }
+        }
     }
 };

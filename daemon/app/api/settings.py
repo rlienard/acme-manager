@@ -10,7 +10,8 @@ from ..config import ConfigManager
 from ..models import (
     AllSettings, ISESettings, ACMESettings, CertificateSettings,
     DNSSettings, SMTPSettings, SchedulerSettings,
-    ISENodeCreate, ISENodeResponse, MessageResponse
+    ISENodeCreate, ISENodeResponse, MessageResponse,
+    DiscoverNodesResponse, DiscoveredNode, SystemCertificateInfo
 )
 from ..scheduler import configure_scheduler
 from ..services.ise_client import ISEClient
@@ -131,6 +132,83 @@ def delete_node(node_id: int, db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────
+# Node Discovery
+# ──────────────────────────────
+
+@router.post("/nodes/discover", response_model=DiscoverNodesResponse)
+def discover_nodes(db: Session = Depends(get_db)):
+    """Discover all ISE deployment nodes via ERS API."""
+    config = ConfigManager.get_flat(db)
+    client = ISEClient(config)
+    try:
+        nodes = client.discover_nodes()
+        discovered = [DiscoveredNode(**n) for n in nodes]
+        psn_count = sum(1 for n in discovered if "PSN" in n.roles)
+        return DiscoverNodesResponse(nodes=discovered, total=len(discovered), psn_count=psn_count)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"ERS discovery failed: {e}")
+
+
+@router.post("/nodes/sync", response_model=MessageResponse)
+def sync_discovered_nodes(nodes: list[ISENodeCreate], db: Session = Depends(get_db)):
+    """Sync discovered nodes into the database (upsert by name)."""
+    new_count = 0
+    updated_count = 0
+
+    for node in nodes:
+        existing = db.query(ISENode).filter(ISENode.name == node.name).first()
+        if existing:
+            existing.role = node.role
+            existing.is_primary = node.is_primary
+            existing.enabled = node.enabled
+            updated_count += 1
+        else:
+            if node.is_primary:
+                db.query(ISENode).update({ISENode.is_primary: False})
+            db_node = ISENode(**node.model_dump())
+            db.add(db_node)
+            new_count += 1
+
+    db.commit()
+    return MessageResponse(message=f"Synced {new_count + updated_count} nodes ({new_count} new, {updated_count} updated)")
+
+
+# ──────────────────────────────
+# System Certificates
+# ──────────────────────────────
+
+@router.get("/certificates", response_model=list[SystemCertificateInfo])
+def get_system_certificates(db: Session = Depends(get_db)):
+    """Fetch system certificates from ISE for the primary/first enabled node."""
+    config = ConfigManager.get_flat(db)
+    client = ISEClient(config)
+
+    node = db.query(ISENode).filter(ISENode.is_primary == True).first()
+    if not node:
+        node = db.query(ISENode).filter(ISENode.enabled == True).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="No ISE nodes configured. Add or discover nodes first.")
+
+    try:
+        certs = client.get_system_certificates(node.name)
+        result = []
+        for cert in certs:
+            result.append(SystemCertificateInfo(
+                id=str(cert.get("id", "")),
+                friendly_name=cert.get("friendlyName", ""),
+                subject=cert.get("subject", ""),
+                issuer=cert.get("issuedBy", cert.get("issuer", "")),
+                expiration_date=cert.get("expirationDate", ""),
+                used_by=cert.get("usedBy", ""),
+                key_type=cert.get("keyType", ""),
+                node_name=node.name,
+            ))
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch certificates: {e}")
+
+
+# ──────────────────────────────
 # Connection Tests
 # ──────────────────────────────
 
@@ -140,6 +218,14 @@ def test_ise_connection(db: Session = Depends(get_db)):
     config = ConfigManager.get_flat(db)
     client = ISEClient(config)
     return client.test_connection()
+
+
+@router.post("/test/ers", response_model=dict)
+def test_ers_connection(db: Session = Depends(get_db)):
+    """Test ISE ERS API connectivity."""
+    config = ConfigManager.get_flat(db)
+    client = ISEClient(config)
+    return client.test_ers_connection()
 
 
 @router.post("/test/dns", response_model=dict)
