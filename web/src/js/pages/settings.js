@@ -994,7 +994,7 @@ const Settings = {
                 <div class="table-container">
                 <table>
                     <thead><tr>
-                        <th>Friendly Name</th><th>Subject / CN</th><th>Issuer</th>
+                        <th>Friendly Name</th><th>Subject / CN</th><th>Node</th><th>Issuer</th>
                         <th>Expiry</th><th>Used By</th><th>Action</th>
                     </tr></thead>
                     <tbody>
@@ -1004,6 +1004,7 @@ const Settings = {
                             return `<tr>
                                 <td>${this._escape(cert.friendly_name)}</td>
                                 <td><code style="font-size:0.8rem">${this._escape(cn)}</code></td>
+                                <td style="font-size:0.8rem"><span class="badge info">${this._escape(cert.node_name || '—')}</span></td>
                                 <td style="font-size:0.8rem; color:var(--text-muted)">${this._escape(cert.issuer || '—')}</td>
                                 <td style="font-size:0.8rem">${this._escape(expiry)}</td>
                                 <td style="font-size:0.8rem">${this._escape(cert.used_by || '—')}</td>
@@ -1030,6 +1031,9 @@ const Settings = {
             san_names: cert.san_names || [],
             key_type: this._normalizeKeyType(cert.key_type),
             portal_group_tag: cert.portal_group_tag || 'Default Portal Certificate Group',
+            certificate_mode: 'shared',
+            renewal_threshold_days: 30,
+            enabled: true,
             node_ids: cert.node_id ? [cert.node_id] : [],
         };
         this.showCertForm(prefill);
@@ -1107,7 +1111,7 @@ const Settings = {
         document.getElementById('cert-key-type').value = prefill.key_type || 'RSA_2048';
         document.getElementById('cert-mode').value = prefill.certificate_mode || 'shared';
         document.getElementById('cert-threshold').value = prefill.renewal_threshold_days || '30';
-        document.getElementById('cert-enabled').value = 'true';
+        document.getElementById('cert-enabled').value = prefill.enabled === false ? 'false' : 'true';
         if (title) title.textContent = 'Add Certificate';
 
         panel.style.display = 'block';
@@ -1180,16 +1184,27 @@ const Settings = {
         const input = document.getElementById('cert-portal-tag-input');
         if (!select || !input) return;
 
-        // If we have cached tags, use them; otherwise keep the free-text input.
+        // If we have cached tags, use them immediately.
         if (this._portalGroupTags && this._portalGroupTags.length) {
             this._populatePortalGroupSelect(selectedTag);
             return;
         }
 
-        // Start with the free-text input visible, prefill with selectedTag
+        // Seed the free-text input as a fallback in case ISE is unreachable.
         input.value = selectedTag || 'Default Portal Certificate Group';
         input.style.display = '';
         select.style.display = 'none';
+
+        // Auto-fetch from ISE silently — no toast on auto-load.
+        try {
+            const tags = await api.getPortalGroupTags();
+            this._portalGroupTags = tags || [];
+            if (this._portalGroupTags.length) {
+                this._populatePortalGroupSelect(selectedTag || input.value);
+            }
+        } catch (err) {
+            console.warn('Auto-fetch of portal group tags failed; falling back to free-text input:', err);
+        }
     },
 
     _populatePortalGroupSelect(selectedTag) {
