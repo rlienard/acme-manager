@@ -121,6 +121,7 @@ class ACMERenewalEngine:
                 cert_config["common_name"] = managed_cert.common_name
                 cert_config["san_names"] = managed_cert.san_names or []
                 cert_config["key_type"] = managed_cert.key_type
+                cert_config["subject"] = managed_cert.subject or {}
                 cert_config["portal_group_tag"] = managed_cert.portal_group_tag
                 cert_config["certificate_mode"] = managed_cert.certificate_mode
                 cert_config["renewal_threshold_days"] = managed_cert.renewal_threshold_days
@@ -458,7 +459,11 @@ class ACMERenewalEngine:
                 acme.poll_authorization(authz_url)
 
             # Finalize and get certificate
-            cert_pem, key_pem = acme.finalize_order(order, cn, san_names)
+            cert_pem, key_pem = acme.finalize_order(
+                order, cn, san_names,
+                key_type=config.get("key_type", "RSA_2048"),
+                subject=config.get("subject") or {},
+            )
 
             # Import into ISE primary node
             portal_group_tag = config.get("portal_group_tag", "")
@@ -524,7 +529,11 @@ class ACMERenewalEngine:
                     acme.respond_to_challenge(challenge["url"])
                     acme.poll_authorization(authz_url)
 
-                cert_pem, key_pem = acme.finalize_order(order, cn, san_names)
+                cert_pem, key_pem = acme.finalize_order(
+                order, cn, san_names,
+                key_type=config.get("key_type", "RSA_2048"),
+                subject=config.get("subject") or {},
+            )
 
                 portal_group_tag = config.get("portal_group_tag", "")
                 ise.import_certificate(
