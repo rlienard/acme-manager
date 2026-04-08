@@ -199,16 +199,20 @@ class ISEClient:
         if node_detail.get("papNode", False):
             roles.append("PAN")
         services = node_detail.get("nodeServiceTypes", "")
+
+        def _normalize(value: str) -> str:
+            return "".join(ch for ch in value.lower() if ch.isalnum())
+
         if isinstance(services, str):
-            service_keys = [s.strip().lower() for s in services.split(",") if s.strip()]
+            service_keys = [_normalize(s) for s in services.split(",") if s.strip()]
         elif isinstance(services, list):
-            service_keys = [s.lower() for s in services if isinstance(s, str)]
+            service_keys = [_normalize(s) for s in services if isinstance(s, str)]
         elif isinstance(services, dict):
-            service_keys = [k.lower() for k in services.keys()]
+            service_keys = [_normalize(k) for k in services.keys()]
         else:
             service_keys = []
         if service_keys:
-            psn_indicators = ["session", "profiler", "device_admin", "sxp"]
+            psn_indicators = ["session", "profiler", "deviceadmin", "sxp", "tcnac", "passiveidentity"]
             if any(ind in sk for sk in service_keys for ind in psn_indicators):
                 roles.append("PSN")
             mon_indicators = ["monitoring"]
