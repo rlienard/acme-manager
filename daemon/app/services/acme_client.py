@@ -14,7 +14,7 @@ import time
 
 import requests
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, padding, utils
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
 from cryptography.x509.oid import NameOID
 from cryptography import x509
 
@@ -22,6 +22,85 @@ logger = logging.getLogger(__name__)
 
 LETSENCRYPT_DIRECTORY = "https://acme-api.letsencrypt.org/directory"
 LETSENCRYPT_STAGING_DIRECTORY = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+
+# ISE-compatible key types → (algorithm, parameters) used to generate the
+# certificate private key during CSR build. Keeping this mapping in one place
+# ensures the renewal flow honors whatever the user selected on the managed
+# certificate (or cloned from the inspected source cert).
+_KEY_TYPE_GENERATORS = {
+    "RSA_2048": ("rsa", 2048),
+    "RSA_3072": ("rsa", 3072),
+    "RSA_4096": ("rsa", 4096),
+    "ECDSA_256": ("ec", ec.SECP256R1),
+    "ECDSA_384": ("ec", ec.SECP384R1),
+    "ECDSA_521": ("ec", ec.SECP521R1),
+}
+
+
+# Short subject-DN labels understood by finalize_order() when building the
+# CSR. Values are taken from the InspectedCertificate / ManagedCertificate
+# ``subject`` dict so we can preserve O / OU / C / ST / L / emailAddress
+# across renewals. Unknown keys are ignored.
+_SUBJECT_LABEL_TO_OID = {
+    "CN": NameOID.COMMON_NAME,
+    "C": NameOID.COUNTRY_NAME,
+    "ST": NameOID.STATE_OR_PROVINCE_NAME,
+    "L": NameOID.LOCALITY_NAME,
+    "O": NameOID.ORGANIZATION_NAME,
+    "OU": NameOID.ORGANIZATIONAL_UNIT_NAME,
+    "emailAddress": NameOID.EMAIL_ADDRESS,
+    "serialNumber": NameOID.SERIAL_NUMBER,
+    "GN": NameOID.GIVEN_NAME,
+    "SN": NameOID.SURNAME,
+    "title": NameOID.TITLE,
+    "street": NameOID.STREET_ADDRESS,
+    "postalCode": NameOID.POSTAL_CODE,
+    "DC": NameOID.DOMAIN_COMPONENT,
+}
+
+
+def _generate_cert_key(key_type: str):
+    """Generate a new private key that matches ISE's key_type labels."""
+    spec = _KEY_TYPE_GENERATORS.get((key_type or "").upper())
+    if spec is None:
+        logger.warning(
+            f"Unknown key_type '{key_type}', defaulting to RSA_2048"
+        )
+        spec = _KEY_TYPE_GENERATORS["RSA_2048"]
+    kind, param = spec
+    if kind == "rsa":
+        return rsa.generate_private_key(public_exponent=65537, key_size=param)
+    # EC curve — ``param`` is the curve class
+    return ec.generate_private_key(param())
+
+
+def _build_subject_name(common_name: str, subject: dict | None) -> x509.Name:
+    """Build an x509.Name from a subject dict, always including the CN."""
+    attrs: list[x509.NameAttribute] = []
+    if subject:
+        for label, value in subject.items():
+            if value in (None, "", [], {}):
+                continue
+            oid = _SUBJECT_LABEL_TO_OID.get(label)
+            if oid is None:
+                continue
+            # The inspected subject stores single values as strings and
+            # multi-valued RDNs as lists — normalize to a list for iteration.
+            values = value if isinstance(value, list) else [value]
+            for v in values:
+                if not v:
+                    continue
+                if oid == NameOID.COMMON_NAME:
+                    # Honor the canonical CN from the managed cert row, not
+                    # whatever drifted into the inspected snapshot.
+                    continue
+                attrs.append(x509.NameAttribute(oid, str(v)))
+    if common_name:
+        attrs.insert(0, x509.NameAttribute(NameOID.COMMON_NAME, common_name))
+    if not attrs:
+        attrs.append(x509.NameAttribute(NameOID.COMMON_NAME, common_name or ""))
+    return x509.Name(attrs)
 
 
 def _b64url(data: bytes) -> str:
@@ -225,34 +304,36 @@ class ACMEv2Client:
         raise TimeoutError(f"Authorization not valid after {max_wait}s")
 
     def finalize_order(self, order: dict, common_name: str,
-                       san_names: list[str] = None) -> tuple[str, str]:
+                       san_names: list[str] = None,
+                       key_type: str = "RSA_2048",
+                       subject: dict | None = None) -> tuple[str, str]:
         """
         Finalize the order by submitting a CSR.
 
+        The certificate private key is generated according to ``key_type``
+        (e.g. RSA_2048, RSA_4096, ECDSA_256) so the renewed certificate
+        matches whatever the managed certificate row configured. If
+        ``subject`` is provided, its components (O, OU, C, ST, L, …) are
+        copied into the CSR so renewals preserve the full subject DN of
+        the certificate that was cloned from ISE.
+
         Returns (cert_pem, private_key_pem).
         """
-        # Generate a new private key for the certificate
-        cert_key = ec.generate_private_key(ec.SECP256R1())
+        # Generate a new private key matching the requested key type
+        cert_key = _generate_cert_key(key_type)
         cert_key_pem = cert_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
         ).decode("utf-8")
 
-        # Build CSR
+        # Build CSR with full subject DN (CN plus any cloned components)
         builder = x509.CertificateSigningRequestBuilder()
-        builder = builder.subject_name(x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
-        ]))
+        builder = builder.subject_name(_build_subject_name(common_name, subject))
 
         all_names = [common_name] + (san_names or [])
         unique_names = list(dict.fromkeys(all_names))  # deduplicate, preserve order
-        san_entries = []
-        for name in unique_names:
-            if name.startswith("*."):
-                san_entries.append(x509.DNSName(name))
-            else:
-                san_entries.append(x509.DNSName(name))
+        san_entries = [x509.DNSName(name) for name in unique_names if name]
         builder = builder.add_extension(
             x509.SubjectAlternativeName(san_entries), critical=False,
         )

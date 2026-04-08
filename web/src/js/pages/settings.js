@@ -1304,6 +1304,10 @@ const Settings = {
                     ? inspected.san_names
                     : fallback.san_names,
                 key_type: inspected.key_type || fallback.key_type,
+                // Carry the full subject DN (O/OU/C/ST/L/…) through the form
+                // so it's persisted on the managed certificate row and used
+                // when the CSR is regenerated at renewal time.
+                subject: inspected.subject || {},
                 portal_group_tag: inspected.portal_group_tag || fallback.portal_group_tag,
                 certificate_mode: 'shared',
                 renewal_threshold_days: 30,
@@ -1393,6 +1397,12 @@ const Settings = {
         document.getElementById('cert-mode').value = prefill.certificate_mode || 'shared';
         document.getElementById('cert-threshold').value = prefill.renewal_threshold_days || '30';
         document.getElementById('cert-enabled').value = prefill.enabled === false ? 'false' : 'true';
+        // Stash the subject DN components so they survive until save. There
+        // is no visible form field for them — they're cloned from the
+        // inspected source cert (or an existing managed row) and persisted
+        // on the managed_certificates row so the CSR at renewal time keeps
+        // the full subject.
+        this._pendingSubject = prefill.subject || {};
         if (title) title.textContent = 'Add Certificate';
 
         panel.style.display = 'block';
@@ -1479,6 +1489,8 @@ const Settings = {
             document.getElementById('cert-mode').value = cert.certificate_mode;
             document.getElementById('cert-threshold').value = cert.renewal_threshold_days;
             document.getElementById('cert-enabled').value = cert.enabled ? 'true' : 'false';
+            // Preserve the stored subject DN components across edit saves.
+            this._pendingSubject = cert.subject || {};
             if (title) title.textContent = 'Edit Certificate';
 
             panel.style.display = 'block';
@@ -1628,6 +1640,10 @@ const Settings = {
                 common_name: document.getElementById('cert-cn').value,
                 san_names: sanInput ? sanInput.split(',').map(s => s.trim()).filter(Boolean) : [],
                 key_type: document.getElementById('cert-key-type').value,
+                // Subject DN components captured from the inspected source
+                // cert (or from the existing row when editing) — stored so
+                // renewals can rebuild a CSR with the full subject.
+                subject: this._pendingSubject || {},
                 certificate_mode: document.getElementById('cert-mode').value,
                 portal_group_tag: this._getPortalGroupTagValue(),
                 renewal_threshold_days: parseInt(document.getElementById('cert-threshold').value),

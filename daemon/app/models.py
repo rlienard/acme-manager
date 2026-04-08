@@ -386,6 +386,10 @@ class ManagedCertificateCreate(BaseModel):
     common_name: str = Field(..., description="Certificate Common Name")
     san_names: List[str] = Field(default_factory=list)
     key_type: str = Field("RSA_2048")
+    subject: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional subject DN components (O, OU, C, ST, L, …) preserved at renewal time",
+    )
     portal_group_tag: str = Field("Default Portal Certificate Group")
     certificate_mode: CertificateMode = Field(CertificateMode.SHARED)
     renewal_threshold_days: int = Field(30)
@@ -398,6 +402,7 @@ class ManagedCertificateUpdate(BaseModel):
     common_name: Optional[str] = None
     san_names: Optional[List[str]] = None
     key_type: Optional[str] = None
+    subject: Optional[Dict[str, Any]] = None
     portal_group_tag: Optional[str] = None
     certificate_mode: Optional[CertificateMode] = None
     renewal_threshold_days: Optional[int] = None
@@ -411,6 +416,7 @@ class ManagedCertificateResponse(BaseModel):
     common_name: str
     san_names: List[str] = []
     key_type: str
+    subject: Dict[str, Any] = Field(default_factory=dict)
     portal_group_tag: str
     certificate_mode: str
     renewal_threshold_days: int

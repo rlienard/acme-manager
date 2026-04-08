@@ -43,6 +43,7 @@ def _serialize_cert(cert: ManagedCertificate) -> dict:
         "common_name": cert.common_name,
         "san_names": cert.san_names or [],
         "key_type": cert.key_type,
+        "subject": cert.subject or {},
         "portal_group_tag": cert.portal_group_tag,
         "certificate_mode": cert.certificate_mode,
         "renewal_threshold_days": cert.renewal_threshold_days,
@@ -76,6 +77,7 @@ def create_certificate(data: ManagedCertificateCreate, db: Session = Depends(get
         common_name=data.common_name,
         san_names=data.san_names,
         key_type=data.key_type,
+        subject=data.subject or {},
         portal_group_tag=data.portal_group_tag,
         certificate_mode=data.certificate_mode.value,
         renewal_threshold_days=data.renewal_threshold_days,
@@ -100,6 +102,8 @@ def update_certificate(cert_id: int, data: ManagedCertificateUpdate, db: Session
         cert.san_names = data.san_names
     if data.key_type is not None:
         cert.key_type = data.key_type
+    if data.subject is not None:
+        cert.subject = data.subject
     if data.portal_group_tag is not None:
         cert.portal_group_tag = data.portal_group_tag
     if data.certificate_mode is not None:

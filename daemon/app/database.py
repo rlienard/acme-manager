@@ -123,6 +123,10 @@ class ManagedCertificate(Base):
     common_name = Column(String(255), nullable=False)
     san_names = Column(JSON, default=[])
     key_type = Column(String(50), default="RSA_2048")
+    # Additional subject DN components (O, OU, C, ST, L, emailAddress, …) —
+    # captured from the source certificate when cloning from ISE so the CSR
+    # generated at renewal time preserves the full subject.
+    subject = Column(JSON, default={})
     portal_group_tag = Column(String(255), default="Default Portal Certificate Group")
     certificate_mode = Column(String(20), default="shared")  # shared / per-node
     renewal_threshold_days = Column(Integer, default=30)
@@ -228,6 +232,11 @@ def _migrate_add_columns():
             with engine.begin() as conn:
                 conn.execute(text(
                     "ALTER TABLE managed_certificates ADD COLUMN acme_provider_id INTEGER"
+                ))
+        if "subject" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE managed_certificates ADD COLUMN subject JSON"
                 ))
     if "acme_providers" in inspector.get_table_names():
         cols = {c["name"] for c in inspector.get_columns("acme_providers")}
