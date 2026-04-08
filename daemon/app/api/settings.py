@@ -192,19 +192,24 @@ def sync_discovered_nodes(nodes: list[ISENodeCreate], db: Session = Depends(get_
 
 @router.get("/certificates", response_model=list[SystemCertificateInfo])
 def get_system_certificates(db: Session = Depends(get_db)):
-    """Fetch system certificates from ISE for the primary/first enabled node."""
+    """Fetch system certificates from every enabled ISE node and merge them."""
     config = ConfigManager.get_flat(db)
     client = ISEClient(config)
 
-    node = db.query(ISENode).filter(ISENode.is_primary == True).first()
-    if not node:
-        node = db.query(ISENode).filter(ISENode.enabled == True).first()
-    if not node:
-        raise HTTPException(status_code=404, detail="No ISE nodes configured. Add or discover nodes first.")
+    nodes = db.query(ISENode).filter(ISENode.enabled == True).all()
+    if not nodes:
+        raise HTTPException(status_code=404, detail="No enabled ISE nodes configured. Add or discover nodes first.")
 
-    try:
-        certs = client.get_system_certificates(node.name)
-        result = []
+    result: list[SystemCertificateInfo] = []
+    errors: list[str] = []
+
+    for node in nodes:
+        try:
+            certs = client.get_system_certificates(node.name)
+        except Exception as e:
+            errors.append(f"{node.name}: {e}")
+            continue
+
         for cert in certs:
             # Parse SAN names — ISE returns them as a comma-separated string
             san_raw = (
@@ -230,9 +235,12 @@ def get_system_certificates(db: Session = Depends(get_db)):
                 san_names=san_list,
                 portal_group_tag=cert.get("portalGroupTag") or None,
             ))
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch certificates: {e}")
+
+    # If every node failed, surface the aggregated error.
+    if errors and not result:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch certificates from any node: {'; '.join(errors)}")
+
+    return result
 
 
 @router.get("/portal-group-tags", response_model=list[str])
