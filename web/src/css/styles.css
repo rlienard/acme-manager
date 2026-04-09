@@ -598,3 +598,175 @@ tbody tr:last-child td {
         display: flex;
     }
 }
+
+/* ── Live certificate-request log overlay ── */
+.cert-log-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.78);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 2rem;
+    animation: fadeIn 0.18s ease;
+}
+
+.cert-log-modal {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 880px;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
+.cert-log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.1rem 1.4rem;
+    border-bottom: 1px solid var(--border);
+    gap: 1rem;
+}
+
+.cert-log-header h3 {
+    font-size: 1.05rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text);
+}
+
+.cert-log-header h3 i {
+    color: var(--primary);
+}
+
+.cert-log-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: rgba(138, 138, 154, 0.15);
+    color: var(--text-muted);
+}
+
+.cert-log-status.running {
+    background: rgba(4, 159, 217, 0.15);
+    color: var(--primary);
+}
+
+.cert-log-status.success {
+    background: rgba(46, 204, 113, 0.15);
+    color: var(--success);
+}
+
+.cert-log-status.error {
+    background: rgba(231, 76, 60, 0.15);
+    color: var(--danger);
+}
+
+.cert-log-spinner {
+    display: inline-flex;
+}
+
+.cert-log-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 1.4rem;
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    min-height: 280px;
+    max-height: 60vh;
+}
+
+.cert-log-line {
+    display: grid;
+    grid-template-columns: 18px 70px auto 1fr;
+    column-gap: 10px;
+    align-items: start;
+    padding: 4px 0;
+    color: var(--text);
+}
+
+.cert-log-line .cert-log-icon {
+    font-size: 0.9rem;
+    margin-top: 3px;
+}
+
+.cert-log-line--info .cert-log-icon { color: var(--primary); }
+.cert-log-line--success .cert-log-icon { color: var(--success); }
+.cert-log-line--warning .cert-log-icon { color: var(--warning); }
+.cert-log-line--error .cert-log-icon { color: var(--danger); }
+
+.cert-log-time {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    margin-top: 2px;
+}
+
+.cert-log-phase {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    background: rgba(4, 159, 217, 0.12);
+    color: var(--primary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+    margin-top: 2px;
+}
+
+.cert-log-msg {
+    color: var(--text);
+    word-break: break-word;
+}
+
+.cert-log-line--success .cert-log-msg { color: var(--success); }
+.cert-log-line--warning .cert-log-msg { color: var(--warning); }
+.cert-log-line--error .cert-log-msg { color: var(--danger); }
+
+.cert-log-detail {
+    grid-column: 4 / 5;
+    margin-left: 100px;
+    padding: 2px 0 6px;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    word-break: break-all;
+}
+
+.cert-log-detail code {
+    background: rgba(138, 138, 154, 0.12);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.cert-log-summary {
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+}
+
+.cert-log-footer {
+    padding: 0.9rem 1.4rem;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.cert-log-footer .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

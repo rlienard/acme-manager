@@ -2,16 +2,30 @@
 Managed Certificates API — CRUD for multi-certificate management.
 """
 
+import json
+import logging
+import queue
+import threading
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List
 
-from ..database import get_db, ManagedCertificate, ISENode, ACMEProvider
+from ..database import (
+    get_db, SessionLocal,
+    ManagedCertificate, ISENode, ACMEProvider,
+)
 from ..models import (
     ManagedCertificateCreate,
     ManagedCertificateUpdate,
     ManagedCertificateResponse,
+    CertificateRequestPayload,
 )
+from ..services.cert_request import CertificateRequestRunner, CertificateRequestError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/certificates", tags=["certificates"])
 
@@ -128,3 +142,93 @@ def delete_certificate(cert_id: int, db: Session = Depends(get_db)):
     cert = _get_cert_or_404(cert_id, db)
     db.delete(cert)
     db.commit()
+
+
+# ──────────────────────────────────────────────────────────
+# Live "request + push" flow with Server-Sent Events
+# ──────────────────────────────────────────────────────────
+
+def _sse(event: str, data: dict) -> str:
+    """Format a Server-Sent Events frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.post("/request")
+def request_certificate_stream(payload: CertificateRequestPayload):
+    """
+    Request a new certificate from the configured ACME provider and push it
+    to the selected ISE nodes, streaming progress events back over
+    Server-Sent Events so the dashboard overlay can show a live action log.
+
+    This endpoint does NOT create a managed-certificate row — it just runs
+    the full request-and-install flow once against whatever payload the UI
+    supplies. Use ``POST /api/v1/certificates`` if you also want recurring
+    auto-renewal for the new certificate.
+    """
+    events: queue.Queue = queue.Queue()
+
+    def emit(phase: str, level: str, payload_data: dict):
+        events.put({
+            "event": "log",
+            "data": {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "phase": phase,
+                "level": level,
+                **payload_data,
+            },
+        })
+
+    def worker():
+        db = SessionLocal()
+        try:
+            runner = CertificateRequestRunner(db, payload, emit)
+            runner.run()
+            events.put({
+                "event": "complete",
+                "data": {"success": True, "message": "Certificate request completed"},
+            })
+        except CertificateRequestError as e:
+            logger.warning(f"Certificate request failed: {e}")
+            events.put({
+                "event": "complete",
+                "data": {"success": False, "message": str(e)},
+            })
+        except Exception as e:
+            logger.exception("Certificate request crashed")
+            events.put({
+                "event": "complete",
+                "data": {"success": False, "message": f"Unexpected error: {e}"},
+            })
+        finally:
+            db.close()
+            events.put(None)  # sentinel
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def stream():
+        # Kick the client with an initial ack so it can render the overlay
+        # even if the first real event takes a few seconds to arrive.
+        yield _sse("log", {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "phase": "connect",
+            "level": "info",
+            "message": "Connected to certificate request stream",
+            "data": {},
+        })
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield _sse(item["event"], item["data"])
+            if item["event"] == "complete":
+                break
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable nginx proxy buffering
+        },
+    )
