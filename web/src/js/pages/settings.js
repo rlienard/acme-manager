@@ -72,6 +72,19 @@ const Settings = {
         this.loadACMEProviders();
         this.loadManagedCerts();
         this.loadSystemInfo();
+        this.initNewCertificateRequestForm();
+    },
+
+    /**
+     * Populate the "Request New Certificate" form's dynamic dropdowns
+     * (ACME providers + ISE node checkboxes) once the panel is in the DOM.
+     */
+    async initNewCertificateRequestForm() {
+        await Promise.all([
+            this._loadRequestACMEProvidersDropdown(),
+            this._loadRequestNodeCheckboxes(),
+            this._loadRequestPortalGroupTagsDropdown('Default Portal Certificate Group'),
+        ]);
     },
 
     async loadSystemInfo() {
@@ -280,13 +293,128 @@ const Settings = {
     renderCertificatesSection(s) {
         return `
         <div id="panel-certificates" class="settings-panel">
+            <!-- ── Sub-section 1: Request a new certificate ── -->
             <div class="settings-section">
-                <h2><i class="fas fa-lock"></i> Certificates</h2>
+                <h2><i class="fas fa-paper-plane"></i> Request New Certificate</h2>
+                <p style="color:var(--text-muted); font-size:0.875rem; margin-top:-0.5rem; margin-bottom:1rem">
+                    Build an X.509 certificate request, submit it to an ACME provider, and
+                    push the signed certificate to your ISE nodes in one shot. A live action
+                    log will open while the request is in flight.
+                </p>
+
+                <div class="form-grid">
+                    <div class="form-group" style="grid-column: span 2">
+                        <label>Common Name (CN)</label>
+                        <input id="req-cn" placeholder="guest.yourdomain.com">
+                    </div>
+                    <div class="form-group" style="grid-column: span 2">
+                        <label>Subject Alternative Names (comma-separated)</label>
+                        <input id="req-san" placeholder="guest.yourdomain.com,portal.yourdomain.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Organization (O)</label>
+                        <input id="req-subj-o" placeholder="Acme Corp">
+                    </div>
+                    <div class="form-group">
+                        <label>Organizational Unit (OU)</label>
+                        <input id="req-subj-ou" placeholder="Network Operations">
+                    </div>
+                    <div class="form-group">
+                        <label>Country (C)</label>
+                        <input id="req-subj-c" placeholder="US" maxlength="2">
+                    </div>
+                    <div class="form-group">
+                        <label>State / Province (ST)</label>
+                        <input id="req-subj-st" placeholder="California">
+                    </div>
+                    <div class="form-group">
+                        <label>Locality (L)</label>
+                        <input id="req-subj-l" placeholder="San Jose">
+                    </div>
+                    <div class="form-group">
+                        <label>Email Address</label>
+                        <input id="req-subj-email" placeholder="admin@yourdomain.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Key Type</label>
+                        <select id="req-key-type">
+                            <option value="RSA_2048">RSA 2048</option>
+                            <option value="RSA_3072">RSA 3072</option>
+                            <option value="RSA_4096">RSA 4096</option>
+                            <option value="ECDSA_256">ECDSA 256</option>
+                            <option value="ECDSA_384">ECDSA 384</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>ISE Usage ("Used By")</label>
+                        <select id="req-usage">
+                            <option value="Portal" selected>Portal</option>
+                            <option value="Admin">Admin</option>
+                            <option value="EAP">EAP Authentication</option>
+                            <option value="pxGrid">pxGrid</option>
+                            <option value="RADIUS DTLS">RADIUS DTLS</option>
+                            <option value="SAML">SAML</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Certificate Mode</label>
+                        <select id="req-mode">
+                            <option value="shared">Shared (one cert for all nodes)</option>
+                            <option value="per-node">Per-Node (independent certs)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>ACME Provider</label>
+                        <select id="req-acme-provider">
+                            <option value="">— Select provider —</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2">
+                        <label>
+                            Portal Group Tag
+                            <button type="button" class="btn btn-outline btn-sm" style="margin-left:6px; padding:2px 8px; font-size:0.7rem" onclick="Settings.refreshPortalGroupTagsForRequest()" title="Re-discover from ISE">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
+                        </label>
+                        <select id="req-portal-tag" style="display:none">
+                            <option value="Default Portal Certificate Group">Default Portal Certificate Group</option>
+                        </select>
+                        <input id="req-portal-tag-input" value="Default Portal Certificate Group" placeholder="Default Portal Certificate Group">
+                        <small style="color:var(--text-muted); font-size:0.75rem; margin-top:4px; display:block">
+                            Click the refresh button to auto-discover tags from ISE.
+                        </small>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2">
+                        <label>Target ISE Nodes (push certificate to)</label>
+                        <div id="req-node-checkboxes" style="display:flex; flex-wrap:wrap; gap:0.75rem; padding:0.5rem 0">
+                            <span style="color:var(--text-muted); font-size:0.875rem">Loading nodes...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary btn-sm" onclick="Settings.submitNewCertificateRequest()">
+                        <i class="fas fa-paper-plane"></i> Request &amp; Push to ISE
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="Settings.resetNewCertificateForm()">
+                        <i class="fas fa-undo"></i> Reset Form
+                    </button>
+                </div>
+            </div>
+
+            <!-- ── Sub-section 2: Fetch certificates already installed on ISE ── -->
+            <div class="settings-section">
+                <h2><i class="fas fa-download"></i> Fetch from ISE</h2>
+                <p style="color:var(--text-muted); font-size:0.875rem; margin-top:-0.5rem; margin-bottom:1rem">
+                    Discover certificates already installed on your ISE nodes. Any cert
+                    can be cloned into the Auto-Renew list below with one click.
+                </p>
 
                 <!-- ISE Certificate Discovery -->
                 <div style="margin-bottom:1.5rem">
                     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem">
-                        <h3 style="font-size:0.95rem; color:var(--text-muted)">Discovered ISE Certificates</h3>
+                        <h3 style="font-size:0.95rem; color:var(--text-muted); margin:0">Discovered ISE Certificates</h3>
                         <button class="btn btn-outline btn-sm" onclick="Settings.fetchISECertificates()">
                             <i class="fas fa-sync-alt"></i> Fetch from ISE
                         </button>
@@ -1780,5 +1908,316 @@ const Settings = {
             Toast.success(`Certificate "${cn}" deleted`);
             this.loadManagedCerts();
         } catch (err) { Toast.error('Failed to delete: ' + err.message); }
+    },
+
+    // ── Request New Certificate (live ACME flow) ──
+
+    async _loadRequestACMEProvidersDropdown(selectedId = null) {
+        const select = document.getElementById('req-acme-provider');
+        if (!select) return;
+        try {
+            const providers = (this._acmeProviders && this._acmeProviders.length)
+                ? this._acmeProviders
+                : await api.getACMEProviders();
+            this._acmeProviders = providers;
+            if (!providers.length) {
+                select.innerHTML = '<option value="">— No providers configured —</option>';
+                return;
+            }
+            select.innerHTML = ['<option value="">— Select provider —</option>']
+                .concat(providers.map(p =>
+                    `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${this._escape(p.name)} (${p.provider_type})</option>`
+                )).join('');
+        } catch (err) {
+            select.innerHTML = '<option value="">— Failed to load —</option>';
+        }
+    },
+
+    async _loadRequestNodeCheckboxes(selectedIds = []) {
+        const container = document.getElementById('req-node-checkboxes');
+        if (!container) return;
+        try {
+            const nodes = await api.getNodes();
+            if (!nodes.length) {
+                container.innerHTML = '<span style="color:var(--text-muted); font-size:0.875rem">No nodes configured.</span>';
+                return;
+            }
+            container.innerHTML = nodes.map(node => `
+                <label style="display:flex; align-items:center; gap:6px; font-size:0.875rem; cursor:pointer">
+                    <input type="checkbox" class="req-node-cb" value="${node.id}" ${selectedIds.includes(node.id) ? 'checked' : ''}>
+                    ${node.name} <span class="badge ${node.is_primary ? 'success' : 'neutral'}" style="font-size:0.7rem">${node.is_primary ? 'PRIMARY' : node.role}</span>
+                </label>`).join('');
+        } catch (err) {
+            container.innerHTML = '<span style="color:var(--danger); font-size:0.875rem">Failed to load nodes.</span>';
+        }
+    },
+
+    async _loadRequestPortalGroupTagsDropdown(selectedTag) {
+        const select = document.getElementById('req-portal-tag');
+        const input = document.getElementById('req-portal-tag-input');
+        if (!select || !input) return;
+
+        if (this._portalGroupTags && this._portalGroupTags.length) {
+            this._populateRequestPortalGroupSelect(selectedTag);
+            return;
+        }
+
+        input.value = selectedTag || 'Default Portal Certificate Group';
+        input.style.display = '';
+        select.style.display = 'none';
+
+        try {
+            const tags = await api.getPortalGroupTags();
+            this._portalGroupTags = tags || [];
+            if (this._portalGroupTags.length) {
+                this._populateRequestPortalGroupSelect(selectedTag || input.value);
+            }
+        } catch (err) {
+            // Leave the free-text input in place — user can type a tag.
+        }
+    },
+
+    _populateRequestPortalGroupSelect(selectedTag) {
+        const select = document.getElementById('req-portal-tag');
+        const input = document.getElementById('req-portal-tag-input');
+        if (!select || !input) return;
+        const tags = this._portalGroupTags || [];
+        const current = selectedTag || input.value || 'Default Portal Certificate Group';
+        const allTags = Array.from(new Set([current, ...tags])).filter(Boolean);
+        select.innerHTML = allTags.map(t =>
+            `<option value="${this._escape(t)}" ${t === current ? 'selected' : ''}>${this._escape(t)}</option>`
+        ).join('');
+        select.style.display = '';
+        input.style.display = 'none';
+    },
+
+    async refreshPortalGroupTagsForRequest() {
+        try {
+            Toast.info('Fetching portal group tags from ISE...');
+            const tags = await api.getPortalGroupTags();
+            this._portalGroupTags = tags;
+            const input = document.getElementById('req-portal-tag-input');
+            const select = document.getElementById('req-portal-tag');
+            const currentValue = (select && select.style.display !== 'none')
+                ? select.value
+                : (input ? input.value : 'Default Portal Certificate Group');
+            this._populateRequestPortalGroupSelect(currentValue);
+            Toast.success(`Discovered ${tags.length} portal group tag(s)`);
+        } catch (err) {
+            Toast.error('Failed to fetch portal group tags: ' + err.message);
+        }
+    },
+
+    _getRequestPortalGroupTagValue() {
+        const select = document.getElementById('req-portal-tag');
+        const input = document.getElementById('req-portal-tag-input');
+        if (select && select.style.display !== 'none') return select.value;
+        if (input) return input.value;
+        return 'Default Portal Certificate Group';
+    },
+
+    resetNewCertificateForm() {
+        ['req-cn','req-san','req-subj-o','req-subj-ou','req-subj-c','req-subj-st','req-subj-l','req-subj-email']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        const keyType = document.getElementById('req-key-type');
+        if (keyType) keyType.value = 'RSA_2048';
+        const usage = document.getElementById('req-usage');
+        if (usage) usage.value = 'Portal';
+        const mode = document.getElementById('req-mode');
+        if (mode) mode.value = 'shared';
+        const provider = document.getElementById('req-acme-provider');
+        if (provider) provider.selectedIndex = 0;
+        document.querySelectorAll('.req-node-cb').forEach(cb => { cb.checked = false; });
+        const input = document.getElementById('req-portal-tag-input');
+        const select = document.getElementById('req-portal-tag');
+        if (input) input.value = 'Default Portal Certificate Group';
+        if (select && select.options.length) select.value = 'Default Portal Certificate Group';
+    },
+
+    _collectNewCertificateRequestPayload() {
+        const v = id => (document.getElementById(id)?.value ?? '').trim();
+        const cn = v('req-cn');
+        const sanRaw = v('req-san');
+        const sans = sanRaw ? sanRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+        const subject = {};
+        const o = v('req-subj-o'); if (o) subject.O = o;
+        const ou = v('req-subj-ou'); if (ou) subject.OU = ou;
+        const c = v('req-subj-c'); if (c) subject.C = c.toUpperCase();
+        const st = v('req-subj-st'); if (st) subject.ST = st;
+        const l = v('req-subj-l'); if (l) subject.L = l;
+        const email = v('req-subj-email'); if (email) subject.emailAddress = email;
+
+        const providerId = v('req-acme-provider');
+        const nodeIds = Array.from(document.querySelectorAll('.req-node-cb:checked'))
+            .map(cb => parseInt(cb.value));
+
+        return {
+            common_name: cn,
+            san_names: sans,
+            key_type: v('req-key-type') || 'RSA_2048',
+            subject,
+            portal_group_tag: this._getRequestPortalGroupTagValue(),
+            usage: v('req-usage') || 'Portal',
+            certificate_mode: v('req-mode') || 'shared',
+            acme_provider_id: providerId ? parseInt(providerId) : null,
+            node_ids: nodeIds,
+        };
+    },
+
+    async submitNewCertificateRequest() {
+        const payload = this._collectNewCertificateRequestPayload();
+
+        // Client-side validation — keep messages crisp.
+        if (!payload.common_name) { Toast.warning('Please enter a Common Name'); return; }
+        if (!payload.acme_provider_id) { Toast.warning('Please select an ACME provider'); return; }
+        if (!payload.node_ids.length) { Toast.warning('Please select at least one target ISE node'); return; }
+        if (!payload.portal_group_tag) { Toast.warning('Please select or enter a portal group tag'); return; }
+
+        if (!confirm(
+            `Request a new certificate for "${payload.common_name}" and push it to ` +
+            `${payload.node_ids.length} ISE node(s)?`
+        )) return;
+
+        // Open the live overlay and stream events into it.
+        this._openCertRequestLogOverlay(payload);
+
+        try {
+            await api.requestCertificateStream(payload, {
+                onLog: (evt) => this._appendCertRequestLog(evt),
+                onComplete: (evt) => this._completeCertRequestLog(evt),
+                onError: (err) => this._completeCertRequestLog({
+                    success: false,
+                    message: err.message || String(err),
+                }),
+            });
+        } catch (err) {
+            // onError already updated the overlay; just log a toast for visibility.
+            Toast.error('Certificate request failed: ' + err.message);
+        }
+    },
+
+    // ── Live action-log overlay ──
+
+    _openCertRequestLogOverlay(payload) {
+        // Reuse the overlay if it already exists; otherwise build it once.
+        let overlay = document.getElementById('cert-request-log-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'cert-request-log-overlay';
+            overlay.className = 'cert-log-overlay';
+            overlay.innerHTML = `
+                <div class="cert-log-modal">
+                    <div class="cert-log-header">
+                        <h3>
+                            <i class="fas fa-bolt"></i>
+                            <span id="cert-log-title">Requesting certificate…</span>
+                        </h3>
+                        <div class="cert-log-status" id="cert-log-status">
+                            <span class="cert-log-spinner"><i class="fas fa-circle-notch fa-spin"></i></span>
+                            <span>In progress</span>
+                        </div>
+                    </div>
+                    <div class="cert-log-body" id="cert-log-body"></div>
+                    <div class="cert-log-footer">
+                        <button class="btn btn-outline btn-sm" id="cert-log-close-btn"
+                                onclick="Settings._closeCertRequestLogOverlay()" disabled>
+                            <i class="fas fa-times"></i> Close
+                        </button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+        }
+
+        // Reset state for a new run.
+        const title = document.getElementById('cert-log-title');
+        const status = document.getElementById('cert-log-status');
+        const body = document.getElementById('cert-log-body');
+        const closeBtn = document.getElementById('cert-log-close-btn');
+        if (title) title.textContent = `Requesting certificate for ${payload.common_name}`;
+        if (status) {
+            status.className = 'cert-log-status running';
+            status.innerHTML = '<span class="cert-log-spinner"><i class="fas fa-circle-notch fa-spin"></i></span><span>In progress</span>';
+        }
+        if (body) body.innerHTML = '';
+        if (closeBtn) closeBtn.disabled = true;
+        overlay.style.display = 'flex';
+    },
+
+    _appendCertRequestLog(evt) {
+        const body = document.getElementById('cert-log-body');
+        if (!body) return;
+
+        const ts = evt.timestamp ? evt.timestamp.replace('T', ' ').replace('Z', '') : '';
+        const level = (evt.level || 'info').toLowerCase();
+        const phase = evt.phase || '';
+        const message = evt.message || '';
+
+        const iconByLevel = {
+            info: 'fa-info-circle',
+            success: 'fa-check-circle',
+            warning: 'fa-exclamation-triangle',
+            error: 'fa-times-circle',
+        };
+        const icon = iconByLevel[level] || 'fa-info-circle';
+
+        const line = document.createElement('div');
+        line.className = `cert-log-line cert-log-line--${level}`;
+        line.innerHTML = `
+            <i class="fas ${icon} cert-log-icon"></i>
+            <span class="cert-log-time">${this._escape(ts.slice(11, 19))}</span>
+            ${phase ? `<span class="cert-log-phase">${this._escape(phase)}</span>` : ''}
+            <span class="cert-log-msg">${this._escape(message)}</span>
+        `;
+        body.appendChild(line);
+
+        // If the event carries a record name/value, render a small detail row.
+        if (evt.data && (evt.data.record_name || evt.data.record_value)) {
+            const detail = document.createElement('div');
+            detail.className = 'cert-log-detail';
+            const parts = [];
+            if (evt.data.record_name) parts.push(`<code>name=${this._escape(evt.data.record_name)}</code>`);
+            if (evt.data.record_value) parts.push(`<code>value=${this._escape(evt.data.record_value)}</code>`);
+            detail.innerHTML = parts.join(' &nbsp; ');
+            body.appendChild(detail);
+        }
+
+        body.scrollTop = body.scrollHeight;
+    },
+
+    _completeCertRequestLog(evt) {
+        const status = document.getElementById('cert-log-status');
+        const closeBtn = document.getElementById('cert-log-close-btn');
+        const body = document.getElementById('cert-log-body');
+        const success = evt && evt.success;
+
+        if (status) {
+            status.className = `cert-log-status ${success ? 'success' : 'error'}`;
+            status.innerHTML = success
+                ? '<i class="fas fa-check-circle"></i><span>Completed</span>'
+                : '<i class="fas fa-times-circle"></i><span>Failed</span>';
+        }
+        if (closeBtn) closeBtn.disabled = false;
+
+        if (body && evt && evt.message) {
+            const summary = document.createElement('div');
+            summary.className = `cert-log-line cert-log-line--${success ? 'success' : 'error'} cert-log-summary`;
+            summary.innerHTML = `
+                <i class="fas ${success ? 'fa-check-circle' : 'fa-times-circle'} cert-log-icon"></i>
+                <span class="cert-log-msg"><strong>${this._escape(evt.message)}</strong></span>`;
+            body.appendChild(summary);
+            body.scrollTop = body.scrollHeight;
+        }
+
+        if (success) {
+            Toast.success('Certificate request completed');
+            // Refresh the discovered list so the new cert appears.
+            this.fetchISECertificates().catch(() => {});
+        }
+    },
+
+    _closeCertRequestLogOverlay() {
+        const overlay = document.getElementById('cert-request-log-overlay');
+        if (overlay) overlay.style.display = 'none';
     },
 };

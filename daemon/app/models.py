@@ -411,6 +411,30 @@ class ManagedCertificateUpdate(BaseModel):
     node_ids: Optional[List[int]] = None
 
 
+class CertificateRequestPayload(BaseModel):
+    """
+    Payload for the direct "request and push" flow (Settings → Certificates →
+    Request New Certificate). Unlike ManagedCertificateCreate which just
+    persists a renewal schedule, this triggers the full ACME + ISE flow
+    immediately and streams live log output back to the caller.
+    """
+    common_name: str = Field(..., description="Certificate Common Name")
+    san_names: List[str] = Field(default_factory=list)
+    key_type: str = Field("RSA_2048")
+    subject: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra subject DN components (O, OU, C, ST, L, emailAddress, …)",
+    )
+    portal_group_tag: str = Field("Default Portal Certificate Group")
+    usage: str = Field(
+        "Portal",
+        description="ISE 'Used By' role (Portal, Admin, EAP, etc.)",
+    )
+    certificate_mode: CertificateMode = Field(CertificateMode.SHARED)
+    acme_provider_id: int = Field(..., description="ACME provider to use")
+    node_ids: List[int] = Field(..., description="ISE nodes to push the cert to")
+
+
 class ManagedCertificateResponse(BaseModel):
     id: int
     common_name: str

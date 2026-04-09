@@ -84,6 +84,89 @@ const api = {
     updateManagedCertificate(id, data) { return this.request('PUT', `/api/v1/certificates/${id}`, data); },
     deleteManagedCertificate(id) { return this.request('DELETE', `/api/v1/certificates/${id}`); },
 
+    /**
+     * Request a new certificate from an ACME provider and push it to ISE,
+     * consuming the Server-Sent Events stream returned by the daemon.
+     *
+     * @param {object} payload Request payload (CN, SANs, provider, nodes…)
+     * @param {object} handlers { onLog, onComplete, onError } callbacks
+     * @returns {Promise<void>} Resolves when the stream is fully consumed.
+     */
+    async requestCertificateStream(payload, handlers = {}) {
+        const { onLog, onComplete, onError } = handlers;
+        let response;
+        try {
+            response = await fetch(`${API_BASE}/api/v1/certificates/request`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream',
+                },
+                body: JSON.stringify(payload),
+            });
+        } catch (err) {
+            if (onError) onError(err);
+            throw err;
+        }
+
+        if (!response.ok) {
+            let detail = `HTTP ${response.status}`;
+            try {
+                const body = await response.json();
+                detail = body.detail || detail;
+            } catch (_) { /* ignore */ }
+            const err = new Error(detail);
+            if (onError) onError(err);
+            throw err;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        // Parse SSE frames: each frame is delimited by a blank line, and
+        // contains `event:` and `data:` fields.
+        const processFrame = (frame) => {
+            let eventType = 'message';
+            let dataLines = [];
+            frame.split('\n').forEach(line => {
+                if (line.startsWith('event:')) {
+                    eventType = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    dataLines.push(line.slice(5).trim());
+                }
+            });
+            if (!dataLines.length) return;
+            let data;
+            try {
+                data = JSON.parse(dataLines.join('\n'));
+            } catch (e) {
+                console.warn('Malformed SSE frame:', dataLines.join('\n'));
+                return;
+            }
+            if (eventType === 'log' && onLog) onLog(data);
+            else if (eventType === 'complete' && onComplete) onComplete(data);
+        };
+
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) !== -1) {
+                    const frame = buffer.slice(0, idx);
+                    buffer = buffer.slice(idx + 2);
+                    if (frame.trim()) processFrame(frame);
+                }
+            }
+            if (buffer.trim()) processFrame(buffer);
+        } catch (err) {
+            if (onError) onError(err);
+            throw err;
+        }
+    },
+
     // ACME Providers
     getACMEProviders() { return this.request('GET', '/api/v1/acme-providers'); },
     getACMEProvider(id) { return this.request('GET', `/api/v1/acme-providers/${id}`); },
