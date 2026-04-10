@@ -304,10 +304,10 @@ class ISEClient:
                 "allowBasicConstraintCAFalse": True,
                 "allowOutOfDateCert": False,
                 "allowSHA1Certificates": False,
-                "trustForCertificateBasedAdminAuth": False,
-                "trustForCiscoServicesAuth": False,
-                "trustForClientAuth": False,
-                "trustForIseAuth": False,
+                "trustForCertificateBasedAdminAuth": True,
+                "trustForCiscoServicesAuth": True,
+                "trustForClientAuth": True,
+                "trustForIseAuth": True,
                 "validateCertificateExtensions": False,
             }
             try:
@@ -320,13 +320,17 @@ class ISEClient:
                     # Certificate already exists in ISE's trusted store.
                     logger.debug("Intermediate CA '%s' already trusted by ISE", friendly)
                 else:
-                    logger.warning(
-                        "Failed to import intermediate CA '%s' (HTTP %s) — "
-                        "system-certificate import may still succeed if ISE "
-                        "already trusts the chain",
-                        friendly,
-                        status,
-                    )
+                    detail = ""
+                    if exc.response is not None:
+                        try:
+                            detail = exc.response.text.strip()
+                        except Exception:
+                            detail = ""
+                    raise RuntimeError(
+                        f"Failed to import intermediate CA '{friendly}' "
+                        f"into ISE trusted store (HTTP {status})"
+                        + (f": {detail}" if detail else "")
+                    ) from exc
 
     def import_certificate(self, cert_data: dict, node_name: str, portal_group_tag: str) -> dict:
         """
