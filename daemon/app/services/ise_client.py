@@ -99,6 +99,28 @@ class ISEClient:
             "Accept": "application/json"
         })
 
+    def _fetch_csrf_token(self) -> "str | None":
+        """Fetch a CSRF token from ISE for POST/PUT/DELETE requests.
+
+        When CSRF protection is enabled on the ISE Open API, every
+        mutating request must include a valid ``X-CSRF-Token`` header.
+        A token is obtained by sending any GET request with the header
+        ``X-CSRF-Token: fetch``; ISE returns the real token in the same
+        response header.
+
+        Returns the token string, or *None* if the server did not
+        supply one (CSRF protection is disabled).
+        """
+        try:
+            resp = self.session.get(
+                f"{self.base_url}/certs/trusted-certificate",
+                headers={"X-CSRF-Token": "fetch"},
+                timeout=10,
+            )
+            return resp.headers.get("X-CSRF-Token")
+        except Exception:
+            return None
+
     def test_connection(self) -> dict:
         """Test connectivity to ISE."""
         try:
@@ -180,7 +202,9 @@ class ISEClient:
             "autoRenew": True,
             "allowWildcardCerts": "*" in common_name,
         }
-        response = self.session.post(url, json=payload, timeout=30)
+        csrf_token = self._fetch_csrf_token()
+        csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
+        response = self.session.post(url, json=payload, headers=csrf_headers, timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -194,7 +218,9 @@ class ISEClient:
     def confirm_acme_challenge(self, request_id: str) -> dict:
         """Confirm DNS challenge has been fulfilled."""
         url = f"{self.base_url}/certs/acme-challenge/{request_id}/validate"
-        response = self.session.post(url, timeout=30)
+        csrf_token = self._fetch_csrf_token()
+        csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
+        response = self.session.post(url, headers=csrf_headers, timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -234,7 +260,10 @@ class ISEClient:
         # The export endpoint returns a binary ZIP, not JSON. The session's
         # default ``Accept: application/json`` header would make some ISE
         # versions reject the request, so override it for this call.
+        csrf_token = self._fetch_csrf_token()
         headers = {"Accept": "application/octet-stream, application/zip, */*"}
+        if csrf_token:
+            headers["X-CSRF-Token"] = csrf_token
         try:
             response = self.session.post(
                 post_url,
@@ -284,6 +313,9 @@ class ISEClient:
         intermediates = blocks[1:]  # everything after the leaf
         url = f"{self.base_url}/certs/trusted-certificate/import"
 
+        csrf_token = self._fetch_csrf_token()
+        csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
+
         for idx, pem_block in enumerate(intermediates):
             # Derive a human-readable name from the certificate subject.
             try:
@@ -311,7 +343,7 @@ class ISEClient:
                 "validateCertificateExtensions": False,
             }
             try:
-                resp = self.session.post(url, json=payload, timeout=30)
+                resp = self.session.post(url, json=payload, headers=csrf_headers, timeout=30)
                 resp.raise_for_status()
                 logger.info("Imported intermediate CA '%s' into ISE trusted store", friendly)
             except requests.exceptions.HTTPError as exc:
@@ -410,8 +442,10 @@ class ISEClient:
             "allowRoleTransferForSameSubject": True,
             "validateCertificateExtensions": False,
         }
+        csrf_token = self._fetch_csrf_token()
+        csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
         try:
-            response = self.session.post(url, json=payload, timeout=30)
+            response = self.session.post(url, json=payload, headers=csrf_headers, timeout=30)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:
@@ -434,7 +468,9 @@ class ISEClient:
         """Bind certificate to guest portal."""
         url = f"{self.base_url}/certs/system-certificate/{node_name}/{cert_id}"
         payload = {"usedBy": "Portal", "portalGroupTag": portal_group_tag}
-        response = self.session.put(url, json=payload, timeout=30)
+        csrf_token = self._fetch_csrf_token()
+        csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
+        response = self.session.put(url, json=payload, headers=csrf_headers, timeout=30)
         response.raise_for_status()
         return response.json()
 
