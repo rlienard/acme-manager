@@ -29,6 +29,7 @@ from ..models import (
     CertificateDownloadBundlePayload,
 )
 from ..services.cert_request import CertificateRequestRunner, CertificateRequestError
+from ..services.ise_client import split_certificate_chain
 
 logger = logging.getLogger(__name__)
 
@@ -235,11 +236,16 @@ def request_certificate_stream(payload: CertificateRequestPayload):
             if provider and provider.provider_type == "letsencrypt":
                 # ── Split flow: ACME only ──────────────────────────────
                 cert_pem, key_pem = runner.run_acme_phase()
+                components = split_certificate_chain(cert_pem)
                 events.put({
                     "event": "cert_obtained",
                     "data": {
                         "cert_pem": cert_pem,
                         "key_pem": key_pem,
+                        "leaf_pem": components["leaf"],
+                        "intermediate_pem": components["intermediate"],
+                        "root_pem": components["root"],
+                        "ca_chain_pem": components["ca_chain"],
                         "common_name": payload.common_name,
                         "node_ids": payload.node_ids,
                         "portal_group_tag": payload.portal_group_tag,
@@ -352,15 +358,46 @@ def download_certificate_bundle(payload: CertificateDownloadBundlePayload):
     """
     Return a ZIP archive containing the certificate (PEM) and private key.
 
-    The archive contains two files: ``certificate.pem`` (the full chain
-    returned by the ACME CA) and ``private_key.pem`` (the unencrypted
-    PKCS8 private key).  The download filename is derived from the
-    Common Name.
+    The archive contains:
+
+    - ``certificate.pem`` — the full chain returned by the ACME CA
+    - ``private_key.pem`` — the unencrypted PKCS8 private key
+    - ``leaf.pem`` — the leaf (end-entity) certificate only
+    - ``intermediate.pem`` — all intermediate CA certificates concatenated
+    - ``root.pem`` — the root CA certificate (if available)
+    - ``ca-chain.pem`` — intermediates + root concatenated (for importing
+      into ISE or other trust stores)
+
+    The split files are derived from the caller-supplied pre-split fields
+    when present, or computed on-the-fly from ``cert_pem`` otherwise.
+    The download filename is derived from the Common Name.
     """
+    # Use caller-supplied split components when available; otherwise split
+    # the full chain here so the endpoint works with older callers too.
+    if payload.leaf_pem is not None:
+        leaf = payload.leaf_pem
+        intermediate = payload.intermediate_pem or ""
+        root = payload.root_pem or ""
+        ca_chain = payload.ca_chain_pem or (intermediate + root)
+    else:
+        components = split_certificate_chain(payload.cert_pem)
+        leaf = components["leaf"]
+        intermediate = components["intermediate"]
+        root = components["root"]
+        ca_chain = components["ca_chain"]
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("certificate.pem", payload.cert_pem)
         zf.writestr("private_key.pem", payload.key_pem)
+        if leaf:
+            zf.writestr("leaf.pem", leaf)
+        if intermediate:
+            zf.writestr("intermediate.pem", intermediate)
+        if root:
+            zf.writestr("root.pem", root)
+        if ca_chain:
+            zf.writestr("ca-chain.pem", ca_chain)
 
     safe_cn = _re.sub(r"[^\w\-.]", "_", payload.common_name)
     return FastAPIResponse(

@@ -2281,9 +2281,9 @@ const Settings = {
 
     async _onDownloadBundle() {
         if (!this._pendingCertData) return;
-        const { cert_pem, key_pem, common_name } = this._pendingCertData;
+        const { cert_pem, key_pem, common_name, leaf_pem, intermediate_pem, root_pem, ca_chain_pem } = this._pendingCertData;
         try {
-            await api.downloadCertBundle(cert_pem, key_pem, common_name);
+            await api.downloadCertBundle(cert_pem, key_pem, common_name, leaf_pem, intermediate_pem, root_pem, ca_chain_pem);
         } catch (e) {
             Toast.error('Download failed: ' + (e.message || String(e)));
         }

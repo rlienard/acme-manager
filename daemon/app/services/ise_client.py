@@ -367,6 +367,82 @@ def _resolve_issuer_chain(pem_block: str) -> "list[str]":
     return chain
 
 
+def split_certificate_chain(pem_chain: str) -> dict:
+    """Split a full ACME PEM chain into leaf, intermediate(s) and root.
+
+    Given the concatenated PEM returned by an ACME provider (leaf +
+    intermediates, optionally with root), this function:
+
+    1. Splits the chain into individual PEM blocks via :func:`_split_pem_chain`.
+    2. Orders the CA chain by AKI/SKI matching using
+       :func:`_build_chain_from_downloaded`.
+    3. If the topmost CA in the downloaded chain is not self-signed, it
+       attempts to discover the root via :func:`_resolve_issuer_chain`
+       (AIA URL traversal).
+
+    Returns a dict with the following keys:
+
+    - ``leaf``        - PEM string of the leaf certificate.
+    - ``intermediate`` - PEM string of all intermediate certificates
+      concatenated (closest-to-leaf first).  Empty string when there are
+      no intermediates.
+    - ``root``        - PEM string of the root CA certificate, or empty
+      string if no self-signed root could be found.
+    - ``ca_chain``    - PEM string of intermediate(s) + root concatenated.
+      This is the bundle that gets imported into ISE's trusted store.
+    """
+    blocks = _split_pem_chain(pem_chain)
+    if not blocks:
+        return {"leaf": "", "intermediate": "", "root": "", "ca_chain": ""}
+
+    leaf_pem = blocks[0].strip() + "\n"
+
+    # Order the CA chain (leaf excluded) using AKI/SKI matching.
+    ordered_cas = _build_chain_from_downloaded(blocks)
+    if not ordered_cas and len(blocks) > 1:
+        # Fallback: keep the original positional order from the ACME response.
+        ordered_cas = [b.strip() for b in blocks[1:]]
+
+    # If the topmost CA in the downloaded chain is not self-signed, try
+    # to discover the root via AIA.
+    if ordered_cas:
+        try:
+            top_cert = x509.load_pem_x509_certificate(
+                (ordered_cas[-1].strip() + "\n").encode("utf-8")
+            )
+            if top_cert.issuer != top_cert.subject:
+                extra = _resolve_issuer_chain(ordered_cas[-1])
+                if extra:
+                    ordered_cas.extend(extra)
+        except Exception:
+            pass
+
+    # Separate the root (last self-signed cert) from the intermediates.
+    root_pem = ""
+    intermediate_blocks: "list[str]" = []
+    for block in ordered_cas:
+        try:
+            cert_obj = x509.load_pem_x509_certificate(
+                (block.strip() + "\n").encode("utf-8")
+            )
+            if cert_obj.issuer == cert_obj.subject:
+                root_pem = block.strip() + "\n"
+                continue
+        except Exception:
+            pass
+        intermediate_blocks.append(block.strip() + "\n")
+
+    intermediate_pem = "".join(intermediate_blocks)
+    ca_chain_pem = intermediate_pem + root_pem
+
+    return {
+        "leaf": leaf_pem,
+        "intermediate": intermediate_pem,
+        "root": root_pem,
+        "ca_chain": ca_chain_pem,
+    }
+
+
 class ISEClient:
     """Handles all Cisco ISE API interactions."""
 
@@ -594,71 +670,133 @@ class ISEClient:
 
         ISE must already trust every certificate in the chain above the
         leaf in order for ``system-certificate/import`` to succeed.
-        ACME providers (e.g. Let's Encrypt) include the intermediates in
-        the downloaded chain but typically omit the root CA.  ISE
-        requires the issuer of every imported certificate to already be
-        present in its trusted store, so we resolve the full chain up to
-        the root and import certificates from root down.
 
-        The chain is built by walking from the leaf upward through the
-        **downloaded** certificates, matching each certificate's
-        Authority Key Identifier to the next certificate's Subject Key
-        Identifier.  This ensures the *actual* trust path from the ACME
-        response is used, rather than an alternate path that AIA
-        extensions may resolve to (a known issue with Let's Encrypt
-        staging certificates whose AIA URLs can serve certificates from
-        a different chain).
+        Uses :func:`split_certificate_chain` to extract the CA bundle
+        (intermediates + root) and first attempts to import the
+        concatenated ``ca_chain`` PEM in a **single** API call.  If ISE
+        rejects the multi-cert PEM (HTTP 400/500), the method falls back
+        to importing each certificate individually in root-first order so
+        that each cert's issuer is already trusted before the next one is
+        uploaded.
 
-        AIA is only used as a last resort to discover the root CA when
-        it is not included in the downloaded chain, and AIA-discovered
-        certificates are verified against AKI/SKI before being accepted.
-
-        If ISE already has a certificate, the call returns HTTP 409
-        (conflict) — we silently ignore that.
+        HTTP 409 (certificate already exists) is silently ignored in both
+        the single-call and fallback paths.
         """
-        blocks = _split_pem_chain(pem_chain)
-        if len(blocks) <= 1:
-            # No intermediates to upload.
+        components = split_certificate_chain(pem_chain)
+        ca_chain = components["ca_chain"]
+
+        if not ca_chain.strip():
+            # No intermediates or root — nothing to upload.
             return
 
-        # Build the actual trust path from the downloaded certificates
-        # by following AKI → SKI / Issuer → Subject from the leaf.
-        intermediates = _build_chain_from_downloaded(blocks)
-
-        if not intermediates:
-            # Fallback: use the positional order from the ACME response.
-            intermediates = blocks[1:]
-
-        # If the topmost certificate in the chain is not self-signed
-        # (i.e. the root CA was not included in the download), try to
-        # discover the root via AIA.  The AIA resolver now verifies
-        # AKI/SKI to avoid importing a certificate from a different
-        # chain path.
-        try:
-            top_cert = x509.load_pem_x509_certificate(
-                (intermediates[-1].strip() + "\n").encode("utf-8")
+        # Build an ordered list of individual CA PEM blocks (root-first)
+        # for the fallback path and for logging.
+        ca_blocks_leaf_first: "list[str]" = []
+        if components["intermediate"].strip():
+            ca_blocks_leaf_first.extend(
+                _split_pem_chain(components["intermediate"])
             )
-            if top_cert.issuer != top_cert.subject:
-                extra = _resolve_issuer_chain(intermediates[-1])
-                if extra:
-                    intermediates.extend(extra)
-        except Exception:
-            pass
+        if components["root"].strip():
+            ca_blocks_leaf_first.extend(
+                _split_pem_chain(components["root"])
+            )
+        ca_blocks_root_first = list(reversed(ca_blocks_leaf_first))
 
-        # Import from root down so that each certificate's issuer is
-        # already trusted by ISE when we upload the next one.
-        intermediates = list(reversed(intermediates))
-
-        # Log the full chain that will be imported (root-first order).
-        total = len(intermediates)
+        total = len(ca_blocks_root_first)
         logger.info(
-            "Will import %d CA certificate(s) into ISE trusted store "
-            "(root-first order):", total,
+            "Preparing to import CA chain bundle (%d certificate(s): "
+            "%d intermediate(s) + %s root) into ISE trusted store.",
+            total,
+            len(_split_pem_chain(components["intermediate"])) if components["intermediate"].strip() else 0,
+            "1" if components["root"].strip() else "no",
         )
-        for i, blk in enumerate(intermediates):
+
+        url = f"{self.base_url}/certs/trusted-certificate/import"
+
+        # ── Attempt: single concatenated import ─────────────────────────
+        # Derive a friendly name from the first intermediate (or root when
+        # there are no intermediates).
+        first_ca_pem = ca_blocks_root_first[-1] if ca_blocks_root_first else ""
+        try:
+            first_ca_obj = x509.load_pem_x509_certificate(
+                (first_ca_pem.strip() + "\n").encode("utf-8")
+            )
+            cn_attrs = first_ca_obj.subject.get_attributes_for_oid(
+                x509.oid.NameOID.COMMON_NAME
+            )
+            bundle_name = cn_attrs[0].value if cn_attrs else "ACME-CA-chain"
+        except Exception:
+            bundle_name = "ACME-CA-chain"
+
+        bundle_name = re.sub(r"[^A-Za-z0-9 _.\-]", "", bundle_name).strip()
+        bundle_name = re.sub(r" {2,}", " ", bundle_name)
+        if not bundle_name:
+            bundle_name = "ACME-CA-chain"
+
+        csrf_token = self._fetch_csrf_token()
+        csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
+        single_payload = {
+            "data": ca_chain,
+            "name": bundle_name,
+            "description": "Imported automatically by ACME Manager",
+            "allowBasicConstraintCAFalse": True,
+            "allowOutOfDateCert": False,
+            "allowSHA1Certificates": False,
+            "trustForCertificateBasedAdminAuth": True,
+            "trustForCiscoServicesAuth": True,
+            "trustForClientAuth": True,
+            "trustForIseAuth": True,
+            "validateCertificateExtensions": False,
+        }
+        logger.info(
+            "Importing CA chain bundle '%s' into ISE trusted store "
+            "(single concatenated call)...", bundle_name,
+        )
+        try:
+            resp = self.session.post(
+                url, json=single_payload, headers=csrf_headers, timeout=30
+            )
+            resp.raise_for_status()
+            logger.info(
+                "Successfully imported CA chain bundle '%s' into ISE trusted store.",
+                bundle_name,
+            )
+            return  # single import succeeded — nothing more to do
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            if status == 409:
+                logger.info(
+                    "CA chain bundle '%s' already exists in ISE trusted store.",
+                    bundle_name,
+                )
+                return
+            # Any other error: fall through to the individual-import path.
+            detail = ""
+            if exc.response is not None:
+                try:
+                    detail = exc.response.text.strip()
+                except Exception:
+                    detail = ""
+            logger.warning(
+                "Single concatenated CA chain import failed (HTTP %s): %s. "
+                "Falling back to importing each certificate individually.",
+                status, detail or "(empty)",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Single concatenated CA chain import raised an unexpected "
+                "error: %s. Falling back to individual imports.", exc,
+            )
+
+        # ── Fallback: import each certificate individually (root-first) ──
+        logger.info(
+            "Will import %d CA certificate(s) individually into ISE trusted "
+            "store (root-first order):", total,
+        )
+        for i, blk in enumerate(ca_blocks_root_first):
             try:
                 c = x509.load_pem_x509_certificate(
-                    (blk + "\n").encode("utf-8")
+                    (blk.strip() + "\n").encode("utf-8")
                 )
                 subj_attrs = c.subject.get_attributes_for_oid(
                     x509.oid.NameOID.COMMON_NAME
@@ -674,19 +812,15 @@ class ISEClient:
             except Exception:
                 logger.info("  [%d/%d] (could not parse certificate)", i + 1, total)
 
-        url = f"{self.base_url}/certs/trusted-certificate/import"
-
-        for idx, pem_block in enumerate(intermediates):
+        for idx, pem_block in enumerate(ca_blocks_root_first):
             # Fetch a fresh CSRF token for each import: ISE invalidates the
-            # token after every successful mutating request, so reusing one
-            # token across multiple POSTs causes a 403 on the second import.
+            # token after every successful mutating request.
             csrf_token = self._fetch_csrf_token()
             csrf_headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
 
-            # Derive a human-readable name from the certificate subject.
             try:
                 cert_obj = x509.load_pem_x509_certificate(
-                    (pem_block + "\n").encode("utf-8")
+                    (pem_block.strip() + "\n").encode("utf-8")
                 )
                 cn_attrs = cert_obj.subject.get_attributes_for_oid(
                     x509.oid.NameOID.COMMON_NAME
@@ -694,20 +828,15 @@ class ISEClient:
                 friendly = cn_attrs[0].value if cn_attrs else f"ACME-intermediate-{idx}"
             except Exception:
                 friendly = f"ACME-intermediate-{idx}"
+                cert_obj = None
 
-            # Sanitize the friendly name: ISE's trusted-certificate import
-            # API rejects names containing parentheses and other special
-            # characters with a generic "Security Check Failed" (HTTP 400).
-            # Let's Encrypt staging CAs use names like
-            # "(STAGING) Riddling Rhubarb R12" — the parentheses must be
-            # stripped before sending the name to ISE.
             friendly = re.sub(r"[^A-Za-z0-9 _.\-]", "", friendly).strip()
             friendly = re.sub(r" {2,}", " ", friendly)
             if not friendly:
                 friendly = f"ACME-intermediate-{idx}"
 
             payload = {
-                "data": pem_block + "\n",
+                "data": pem_block.strip() + "\n",
                 "name": friendly,
                 "description": "Imported automatically by ACME Manager",
                 "allowBasicConstraintCAFalse": True,
@@ -724,7 +853,9 @@ class ISEClient:
                 idx + 1, total, friendly,
             )
             try:
-                resp = self.session.post(url, json=payload, headers=csrf_headers, timeout=30)
+                resp = self.session.post(
+                    url, json=payload, headers=csrf_headers, timeout=30
+                )
                 resp.raise_for_status()
                 logger.info(
                     "Successfully imported CA [%d/%d] '%s'",
@@ -733,7 +864,6 @@ class ISEClient:
             except requests.exceptions.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else "?"
                 if status == 409:
-                    # Certificate already exists in ISE's trusted store.
                     logger.info(
                         "CA [%d/%d] '%s' already exists in ISE trusted store",
                         idx + 1, total, friendly,
@@ -745,12 +875,14 @@ class ISEClient:
                             detail = exc.response.text.strip()
                         except Exception:
                             detail = ""
-                    # Extract issuer CN for a more actionable error.
                     try:
-                        iss_attrs = cert_obj.issuer.get_attributes_for_oid(
-                            x509.oid.NameOID.COMMON_NAME
-                        )
-                        issuer_cn = iss_attrs[0].value if iss_attrs else str(cert_obj.issuer)
+                        if cert_obj is not None:
+                            iss_attrs = cert_obj.issuer.get_attributes_for_oid(
+                                x509.oid.NameOID.COMMON_NAME
+                            )
+                            issuer_cn = iss_attrs[0].value if iss_attrs else str(cert_obj.issuer)
+                        else:
+                            issuer_cn = "(unknown)"
                     except Exception:
                         issuer_cn = "(unknown)"
                     logger.error(

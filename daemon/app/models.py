@@ -455,6 +455,10 @@ class CertificateDownloadBundlePayload(BaseModel):
     cert_pem: str
     key_pem: str
     common_name: str
+    leaf_pem: Optional[str] = None
+    intermediate_pem: Optional[str] = None
+    root_pem: Optional[str] = None
+    ca_chain_pem: Optional[str] = None
 
 
 class ManagedCertificateResponse(BaseModel):
