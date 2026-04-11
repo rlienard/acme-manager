@@ -248,13 +248,20 @@ const api = {
 
     /**
      * Download a ZIP bundle containing the certificate (PEM) and private key.
-     * Triggers a browser file-save dialog.
+     * When the pre-split components (leafPem, intermediatePem, rootPem,
+     * caChainPem) are provided, they are included as separate files in the
+     * archive.  Triggers a browser file-save dialog.
      */
-    async downloadCertBundle(certPem, keyPem, commonName) {
+    async downloadCertBundle(certPem, keyPem, commonName, leafPem, intermediatePem, rootPem, caChainPem) {
+        const body = { cert_pem: certPem, key_pem: keyPem, common_name: commonName };
+        if (leafPem) body.leaf_pem = leafPem;
+        if (intermediatePem) body.intermediate_pem = intermediatePem;
+        if (rootPem) body.root_pem = rootPem;
+        if (caChainPem) body.ca_chain_pem = caChainPem;
         const response = await fetch(`${API_BASE}/api/v1/certificates/download-bundle`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cert_pem: certPem, key_pem: keyPem, common_name: commonName }),
+            body: JSON.stringify(body),
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
